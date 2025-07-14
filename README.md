@@ -115,9 +115,27 @@ The system uses a hierarchical approach:
 1. **Solo Participants**: Identifies participants with `go_solo = 1`
 2. **Gender Preferences**: Groups by `group_gender_preference`
 3. **Geographic Location**: 
-   - Philippines: Groups by city
-   - International: Groups by state
+   - Philippines: Groups by Province → City hierarchy
+   - International: Groups by Country → State hierarchy
 4. **Group Size**: Creates groups of up to 5 participants
+5. **Small Group Merging**: Groups with less than 5 members are automatically merged with participants from similar countries/regions
+
+### Small Group Merging
+
+When groups have fewer than 5 members, the system automatically merges them with participants from similar geographic regions:
+
+- **Southeast Asia**: Philippines, Indonesia, Malaysia, Thailand, Vietnam, Singapore, Myanmar, Cambodia, Laos, Brunei
+- **East Asia**: China, Japan, South Korea, Taiwan, Hong Kong, Macau
+- **South Asia**: India, Pakistan, Bangladesh, Sri Lanka, Nepal, Bhutan, Maldives
+- **North America**: United States, Canada, Mexico
+- **Europe**: UK, Germany, France, Italy, Spain, Netherlands, Belgium, Switzerland, Austria, Sweden, Norway, Denmark, Finland
+- **Middle East**: Saudi Arabia, UAE, Qatar, Kuwait, Bahrain, Oman, Jordan, Lebanon, Israel, Turkey
+- **Africa**: South Africa, Nigeria, Kenya, Egypt, Morocco, Ghana, Ethiopia
+- **Oceania**: Australia, New Zealand, Fiji, Papua New Guinea
+
+This ensures optimal group sizes while maintaining geographic and cultural proximity.
+
+**⚠️ Important:** The system strictly separates participants with "same_gender" preference from those with "no_preference" - they will never be mixed together, even during small group merging. Additionally, Philippines participants are never mixed with participants from other countries.
 
 ### Grouping Logic
 
@@ -134,9 +152,9 @@ elif gender_preference == "no_preference":
 
 # 3. Sub-group by Location
 if residing_in_philippines == 1:
-    group_by_city()
+    group_by_province_then_city()
 else:
-    group_by_state()
+    group_by_country_then_state()
 
 # 4. Create Groups of 5
 split_into_groups_of_5()
@@ -161,9 +179,13 @@ python analyze_scenarios.py
 ## 📊 Example Output
 
 The system creates groups like:
-- `Group 1 (same_gender, City: Quezon City)` - 5 participants
-- `Group 2 (no_preference, State: California)` - 4 participants  
+- `Group 1 (same_gender, Province: Metro Manila, City: Quezon City)` - 5 participants
+- `Group 2 (no_preference, Country: United States, State: California)` - 5 participants  
+- `Group 3 (male, Southeast Asia)` - 4 participants (merged from small groups)
+- `Group 4 (female, Europe)` - 3 participants (merged from small groups)
 - `Solo 1` - Individual participant
+
+**Note**: Groups with regional names (like "Southeast Asia", "Europe") indicate merged small groups from similar countries. Same-gender and no-preference groups are always kept separate.
 
 ## 🔧 Configuration
 

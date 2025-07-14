@@ -4,6 +4,8 @@ from collections import defaultdict
 import io
 from datetime import datetime
 import os
+import requests
+import json
 
 # Import the grouping logic from the existing script
 from group_assignment_to_excel import group_participants, save_to_excel
@@ -113,7 +115,7 @@ def main():
         st.header("📋 Navigation")
         page = st.selectbox(
             "Choose a page:",
-            ["📊 Dashboard", "📁 Upload Data", "👥 Create Groups", "📈 Analysis", "⚙️ Settings"]
+            ["📊 Dashboard", "📁 Upload Data", "👥 Create Groups", "📈 Analysis", "🔗 API Data", "⚙️ Settings"]
         )
         
         st.markdown("---")
@@ -135,6 +137,8 @@ def main():
         show_grouping_page()
     elif page == "📈 Analysis":
         show_analysis_page()
+    elif page == "🔗 API Data":
+        show_api_page()
     elif page == "⚙️ Settings":
         show_settings_page()
 
@@ -188,9 +192,21 @@ def show_dashboard():
     
     with col2:
         st.subheader("🌍 Geographic Distribution")
-        country_counts = data['country'].value_counts().head(10)
+        
+        # Show top countries
+        country_counts = data['country'].value_counts().head(5)
+        st.write("**Top Countries:**")
         for country, count in country_counts.items():
-            st.write(f"**{country}:** {count} participants")
+            st.write(f"- {country}: {count} participants")
+        
+        # Show Philippines provinces if available
+        ph_data = data[data['residing_in_philippines'] == 1]
+        if len(ph_data) > 0 and 'province' in ph_data.columns:
+            st.write("**Philippines Provinces:**")
+            province_counts = ph_data['province'].value_counts().head(5)
+            for province, count in province_counts.items():
+                if province and str(province).lower() != 'nan':
+                    st.write(f"- {province}: {count} participants")
 
 def show_upload_page():
     st.header("📁 Upload Participant Data")
@@ -291,6 +307,21 @@ def show_grouping_page():
         
         export_format = st.selectbox("Export Format", ["Excel", "CSV"], 
                                     help="Choose output format")
+    
+    # Information about small group merging
+    st.info("""
+    **🔄 Small Group Merging:** Groups with less than 5 members will be automatically merged with participants from similar countries/regions:
+    - **Southeast Asia:** Philippines, Indonesia, Malaysia, Thailand, Vietnam, Singapore, etc.
+    - **East Asia:** China, Japan, South Korea, Taiwan, Hong Kong, Macau
+    - **South Asia:** India, Pakistan, Bangladesh, Sri Lanka, Nepal, Bhutan, Maldives
+    - **North America:** United States, Canada, Mexico
+    - **Europe:** UK, Germany, France, Italy, Spain, Netherlands, Belgium, Switzerland, Austria, Sweden, Norway, Denmark, Finland
+    - **Middle East:** Saudi Arabia, UAE, Qatar, Kuwait, Bahrain, Oman, Jordan, Lebanon, Israel, Turkey
+    - **Africa:** South Africa, Nigeria, Kenya, Egypt, Morocco, Ghana, Ethiopia
+    - **Oceania:** Australia, New Zealand, Fiji, Papua New Guinea
+    
+    **⚠️ Important:** Participants with "same_gender" preference will NEVER be mixed with participants who have "no_preference". Philippines participants are never mixed with participants from other countries.
+    """)
     
     # Advanced options
     with st.expander("🔧 Advanced Options"):
@@ -407,7 +438,7 @@ def show_analysis_page():
         col1, col2 = st.columns(2)
         
         with col1:
-            st.write("**Top 10 Countries:**")
+            st.write("**Top Countries:**")
             country_counts = data['country'].value_counts().head(10)
             for country, count in country_counts.items():
                 st.write(f"- {country}: {count} participants")
@@ -418,6 +449,15 @@ def show_analysis_page():
             int_count = len(data[data['residing_in_philippines'] == 0])
             st.write(f"- Philippines: {ph_count} participants")
             st.write(f"- International: {int_count} participants")
+            
+            # Show Philippines provinces
+            if ph_count > 0 and 'province' in data.columns:
+                st.write("**Philippines Provinces:**")
+                ph_data = data[data['residing_in_philippines'] == 1]
+                province_counts = ph_data['province'].value_counts().head(5)
+                for province, count in province_counts.items():
+                    if province and str(province).lower() != 'nan':
+                        st.write(f"- {province}: {count} participants")
     
     with tab3:
         st.subheader("👥 Grouping Preferences")
@@ -456,6 +496,469 @@ def show_analysis_page():
             st.write(missing_data[missing_data > 0])
         else:
             st.success("✅ No missing data found")
+
+def show_api_page():
+    st.header("🔗 API Data")
+    
+    st.markdown("""
+    ### Fetch Grouping Preferences from Lazy Lifter API
+    This page allows you to fetch and view grouping preferences data from the Lazy Lifter portal API.
+    """)
+    
+    # API Configuration
+    st.subheader("🔧 API Configuration")
+    
+    # Simple endpoint selection
+    api_endpoint = st.selectbox(
+        "Choose API Endpoint",
+        [
+            "Grouping Preferences",
+            "Users",
+            "Custom URL"
+        ],
+        help="Select the API endpoint to fetch data from"
+    )
+    
+    # Set API URL based on selection
+    if api_endpoint == "Grouping Preferences":
+        api_url = "https://portal.thelazylifter.com/api/grouping_preferences"
+    elif api_endpoint == "Users":
+        api_url = "https://portal.thelazylifter.com/api/users"
+    else:
+        api_url = st.text_input(
+            "Enter Custom API URL",
+            value="https://portal.thelazylifter.com/api/grouping_preferences",
+            help="Enter custom API endpoint URL"
+        )
+    
+    # Access token
+    access_token = st.text_input(
+        "Access Token",
+        value="joo9iL1wai8ii1koojaiy1ath3ooxahL7oaphoo1johPhaege8ieQuaGh0shiew0",
+        type="password",
+        help="Bearer token for API authentication"
+    )
+    
+    # Fetch options
+    st.subheader("📊 Fetch Data")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        page_number = st.number_input(
+            "Page Number",
+            min_value=1,
+            value=1,
+            help="Page number for pagination"
+        )
+        
+        if st.button("🚀 Fetch Single Page", type="primary", use_container_width=True):
+            fetch_api_data(api_url, access_token, page_number)
+    
+    with col2:
+        if st.button("📚 Fetch All Pages", type="secondary", use_container_width=True):
+            fetch_all_api_data(api_url, access_token)
+    
+    # Test connection
+    if st.button("🔍 Test API Connection", type="secondary", use_container_width=True):
+        test_api_connection(api_url, access_token, page_number)
+    
+    # Display cached data if available
+    if 'api_data' in st.session_state or 'all_api_records' in st.session_state:
+        st.subheader("📋 API Data Table")
+        
+        # Get records from either single page or all pages
+        if 'all_api_records' in st.session_state:
+            records = st.session_state.all_api_records
+            data_source = "All Pages"
+        else:
+            data = st.session_state.api_data
+            # Handle different possible response formats
+            records = []
+            if isinstance(data, dict):
+                if 'data' in data:
+                    records = data['data']
+                elif 'hydra:member' in data:
+                    records = data['hydra:member']
+                    # Show Hydra pagination info if available
+                    if 'hydra:view' in data:
+                        hydra_view = data['hydra:view']
+                        st.info("📄 Hydra Pagination Info:")
+                        st.json(hydra_view)
+                elif 'results' in data:
+                    records = data['results']
+                elif 'items' in data:
+                    records = data['items']
+                else:
+                    records = [data]
+            elif isinstance(data, list):
+                records = data
+            else:
+                st.error(f"Unexpected data type: {type(data)}")
+                return
+            data_source = f"Page {page_number}"
+        
+        if records:
+            # Determine the endpoint name for display
+            endpoint_name = "Unknown"
+            if 'api_data' in st.session_state:
+                # Try to determine endpoint from the data or use the current URL
+                if hasattr(st, 'session_state') and 'current_api_url' in st.session_state:
+                    current_url = st.session_state.current_api_url
+                    if 'users' in current_url:
+                        endpoint_name = "Users API"
+                    elif 'grouping_preferences' in current_url:
+                        endpoint_name = "Grouping Preferences API"
+                    else:
+                        endpoint_name = "Custom API"
+            
+            st.success(f"📊 Found {len(records)} records from {data_source} ({endpoint_name})")
+            
+            # Convert to DataFrame for better display
+            df = pd.DataFrame(records)
+            
+            # Normalize data types to prevent PyArrow conversion issues
+            for col in df.columns:
+                try:
+                    # Convert complex data types to strings for display
+                    df[col] = df[col].apply(lambda x: 
+                        str(x) if isinstance(x, (list, dict, tuple)) or pd.isna(x) else x
+                    )
+                    
+                    # Ensure all values are strings to avoid PyArrow issues
+                    df[col] = df[col].astype(str)
+                    
+                except Exception as e:
+                    # If any error occurs, convert the entire column to string
+                    try:
+                        df[col] = df[col].astype(str)
+                    except:
+                        # Last resort: replace with placeholder
+                        df[col] = "Data conversion error"
+            
+            # Show data summary
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Records", len(df))
+            with col2:
+                st.metric("Columns", len(df.columns))
+            with col3:
+                st.metric("Data Source", data_source)
+            
+            # Show column information in expander
+            with st.expander("📋 Column Information"):
+                col_info = []
+                for col in df.columns:
+                    try:
+                        # Try to get unique values count
+                        unique_count = df[col].nunique()
+                    except (TypeError, ValueError):
+                        # If column contains unhashable types (like lists), use a different approach
+                        try:
+                            unique_count = len(df[col].dropna().astype(str).unique())
+                        except:
+                            unique_count = "N/A"
+                    
+                    col_info.append({
+                        'Column': col,
+                        'Type': str(df[col].dtype),
+                        'Non-Null Count': df[col].count(),
+                        'Null Count': df[col].isnull().sum(),
+                        'Unique Values': unique_count
+                    })
+                
+                col_df = pd.DataFrame(col_info)
+                st.dataframe(col_df, use_container_width=True)
+            
+            # Display the main data table with search
+            st.subheader("📊 Data Table")
+            
+            # Add search functionality
+            search_term = st.text_input("🔍 Search in all columns:", placeholder="Enter search term...")
+            
+            if search_term:
+                # Search in all columns with error handling for unhashable types
+                search_masks = []
+                for col in df.columns:
+                    try:
+                        # Convert to string and search
+                        col_mask = df[col].astype(str).str.contains(search_term, case=False, na=False)
+                        search_masks.append(col_mask)
+                    except (TypeError, AttributeError):
+                        # For columns with unhashable types, try a different approach
+                        try:
+                            col_mask = df[col].apply(lambda x: search_term.lower() in str(x).lower() if pd.notna(x) else False)
+                            search_masks.append(col_mask)
+                        except:
+                            # If all else fails, create a mask of False values
+                            col_mask = pd.Series([False] * len(df), index=df.index)
+                            search_masks.append(col_mask)
+                
+                # Combine all masks
+                if search_masks:
+                    combined_mask = pd.concat(search_masks, axis=1).any(axis=1)
+                    filtered_df = df[combined_mask]
+                    st.info(f"Found {len(filtered_df)} records matching '{search_term}'")
+                else:
+                    filtered_df = df
+            else:
+                filtered_df = df
+            
+            # Show the data table with error handling
+            try:
+                st.dataframe(filtered_df, use_container_width=True, height=400)
+            except Exception as e:
+                st.error(f"Error displaying dataframe: {str(e)}")
+                st.info("Attempting to display as text table...")
+                
+                # Fallback: display as a simple text table
+                st.write("**Data Preview (first 10 rows):**")
+                for i, row in filtered_df.head(10).iterrows():
+                    st.write(f"**Row {i+1}:**")
+                    for col, value in row.items():
+                        st.write(f"  {col}: {value}")
+                    st.write("---")
+                
+                if len(filtered_df) > 10:
+                    st.info(f"... and {len(filtered_df) - 10} more rows")
+            
+            # Download options
+            st.subheader("📥 Download Data")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Download filtered data as CSV
+                csv_buffer = io.StringIO()
+                filtered_df.to_csv(csv_buffer, index=False)
+                
+                st.download_button(
+                    label="📥 Download Filtered CSV",
+                    data=csv_buffer.getvalue(),
+                    file_name=f"api_data_{data_source.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # Download all data as CSV
+                csv_buffer_all = io.StringIO()
+                df.to_csv(csv_buffer_all, index=False)
+                
+                st.download_button(
+                    label="📥 Download All Data CSV",
+                    data=csv_buffer_all.getvalue(),
+                    file_name=f"all_api_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            # Show sample data for debugging
+            with st.expander("🔍 Debug: Raw API Response Structure"):
+                if 'api_data' in st.session_state:
+                    st.json(st.session_state.api_data)
+                else:
+                    st.write("No raw API data available (using processed records)")
+        else:
+            st.warning("No records found in the API response")
+
+def test_api_connection(api_url, access_token, page_number):
+    """Test the API connection"""
+    try:
+        url = f"{api_url}?page={page_number}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
+        
+        with st.spinner("Testing API connection..."):
+            response = requests.get(url, headers=headers, timeout=10)
+            
+        if response.status_code == 200:
+            st.success("✅ API connection successful!")
+            st.info(f"Status Code: {response.status_code}")
+        else:
+            st.error(f"❌ API connection failed!")
+            st.error(f"Status Code: {response.status_code}")
+            st.error(f"Response: {response.text}")
+            
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Connection error: {str(e)}")
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {str(e)}")
+
+def fetch_api_data(api_url, access_token, page_number):
+    """Fetch data from the API"""
+    try:
+        url = f"{api_url}?page={page_number}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
+        
+        # Store the current API URL for display purposes
+        st.session_state.current_api_url = api_url
+        
+        with st.spinner("Fetching data from API..."):
+            response = requests.get(url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                
+                # Extract records from Hydra format if present
+                if isinstance(data, dict) and 'hydra:member' in data:
+                    records = data['hydra:member']
+                    # Add pagination info if available
+                    if 'hydra:view' in data:
+                        hydra_view = data['hydra:view']
+                        if 'hydra:last' in hydra_view:
+                            last_url = hydra_view['hydra:last']
+                            try:
+                                import re
+                                match = re.search(r'page=(\d+)', last_url)
+                                if match:
+                                    total_pages = int(match.group(1))
+                                    st.info(f"Total pages available: {total_pages}")
+                            except:
+                                pass
+                    
+                    # Store the records in a format consistent with other data
+                    st.session_state.api_data = {'data': records}
+                    st.success(f"✅ Data fetched successfully! Found {len(records)} records")
+                else:
+                    st.session_state.api_data = data
+                    st.success("✅ Data fetched successfully!")
+                
+                st.info(f"Retrieved data for page {page_number}")
+                
+                # Show response structure for debugging
+                st.write("**Response Structure:**")
+                st.json(data)
+                
+            except json.JSONDecodeError as e:
+                st.error(f"❌ Invalid JSON response: {str(e)}")
+                st.error(f"Raw response: {response.text[:500]}...")
+        else:
+            st.error(f"❌ API request failed!")
+            st.error(f"Status Code: {response.status_code}")
+            st.error(f"Response: {response.text}")
+            
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Connection error: {str(e)}")
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {str(e)}")
+        st.error(f"Error type: {type(e).__name__}")
+
+def fetch_all_api_data(api_url, access_token):
+    """Fetch all pages of data from the API using Hydra format"""
+    try:
+        all_records = []
+        page = 1
+        total_pages = 0
+        
+        # Store the current API URL for display purposes
+        st.session_state.current_api_url = api_url
+        
+        # Create progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        with st.spinner("Fetching all pages..."):
+            while True:
+                url = f"{api_url}?page={page}"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}"
+                }
+                
+                status_text.text(f"Fetching page {page}...")
+                
+                response = requests.get(url, headers=headers, timeout=30)
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        
+                        # Extract records based on Hydra format
+                        records = []
+                        if isinstance(data, dict):
+                            # Check for Hydra format first
+                            if 'hydra:member' in data:
+                                records = data['hydra:member']
+                                # Get pagination info from hydra:view
+                                if 'hydra:view' in data:
+                                    hydra_view = data['hydra:view']
+                                    if 'hydra:last' in hydra_view:
+                                        # Extract page number from hydra:last URL
+                                        last_url = hydra_view['hydra:last']
+                                        try:
+                                            # Extract page number from URL like "?page=5"
+                                            import re
+                                            match = re.search(r'page=(\d+)', last_url)
+                                            if match:
+                                                total_pages = int(match.group(1))
+                                        except:
+                                            pass
+                            elif 'data' in data:
+                                records = data['data']
+                                # Check if there's pagination info
+                                if 'meta' in data and 'last_page' in data['meta']:
+                                    total_pages = data['meta']['last_page']
+                                elif 'pagination' in data and 'last_page' in data['pagination']:
+                                    total_pages = data['pagination']['last_page']
+                            elif 'results' in data:
+                                records = data['results']
+                            elif 'items' in data:
+                                records = data['items']
+                            else:
+                                records = [data]
+                        elif isinstance(data, list):
+                            records = data
+                        
+                        if records:
+                            all_records.extend(records)
+                            st.success(f"✅ Page {page}: {len(records)} records")
+                        else:
+                            st.warning(f"⚠️ Page {page}: No records found")
+                            break
+                        
+                        # Update progress
+                        if total_pages > 0:
+                            progress = min(page / total_pages, 1.0)
+                            progress_bar.progress(progress)
+                        
+                        page += 1
+                        
+                        # If we know total pages and we've reached the end
+                        if total_pages > 0 and page > total_pages:
+                            break
+                            
+                        # If no records returned, assume we've reached the end
+                        if not records:
+                            break
+                            
+                    except json.JSONDecodeError as e:
+                        st.error(f"❌ Invalid JSON response on page {page}: {str(e)}")
+                        break
+                else:
+                    st.error(f"❌ API request failed on page {page}!")
+                    st.error(f"Status Code: {response.status_code}")
+                    break
+        
+        # Store all records
+        st.session_state.api_data = {'data': all_records}
+        st.session_state.all_api_records = all_records
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        st.success(f"✅ Successfully fetched {len(all_records)} total records from {page-1} pages!")
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Connection error: {str(e)}")
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {str(e)}")
+        st.error(f"Error type: {type(e).__name__}")
 
 def show_settings_page():
     st.header("⚙️ Settings")
