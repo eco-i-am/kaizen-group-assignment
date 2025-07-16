@@ -10,6 +10,38 @@ import json
 # Import the grouping logic from the existing script
 from group_assignment_to_excel import group_participants, save_to_excel, find_column_mapping
 
+def format_location_display(member, column_mapping):
+    """Format location display based on residing_ph status"""
+    residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
+    
+    if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+        # Philippines resident - show "city, province" format
+        city = member.get(column_mapping.get('city'), '')
+        province = member.get(column_mapping.get('province'), '')
+        
+        # Use "MM" as acronym for Metro Manila
+        if province and province.lower() == 'metro manila':
+            province = 'MM'
+        
+        if city and province:
+            return f"{city}, {province}"
+        elif city:
+            return city
+        elif province:
+            return province
+        else:
+            return ''
+    else:
+        # International resident - show "State, Country"
+        state = member.get(column_mapping.get('state'), '')
+        country = member.get(column_mapping.get('country'), '')
+        if state and country:
+            return f"{state}, {country}"
+        elif country:
+            return country
+        else:
+            return member.get(column_mapping.get('city'), '')
+
 def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_users=None, requested_groups=None):
     """Create download buttons for Excel and CSV files"""
     col1, col2 = st.columns(2)
@@ -58,7 +90,7 @@ def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_
                         'User ID': get_value(participant, 'user_id'),
                         'Name': get_value(participant, 'name'),
                         'Gender': get_value(participant, 'gender_identity'),
-                        'City': get_value(participant, 'city'),
+                        'City': format_location_display(participant, column_mapping) if column_mapping else get_value(participant, 'city'),
                         'Type': 'Requested'
                     })
         
@@ -69,7 +101,7 @@ def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_
                 'User ID': get_value(participant, 'user_id'),
                 'Name': get_value(participant, 'name'),
                 'Gender': get_value(participant, 'gender_identity'),
-                'City': get_value(participant, 'city'),
+                'City': format_location_display(participant, column_mapping) if column_mapping else get_value(participant, 'city'),
                 'Type': 'Solo'
             })
         
@@ -80,7 +112,7 @@ def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_
                     'User ID': get_value(member, 'user_id'),
                     'Name': get_value(member, 'name'),
                     'Gender': get_value(member, 'gender_identity'),
-                    'City': get_value(member, 'city'),
+                    'City': format_location_display(member, column_mapping) if column_mapping else get_value(member, 'city'),
                     'Type': 'Group'
                 })
         
@@ -92,7 +124,7 @@ def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_
                     'User ID': get_value(user, 'user_id'),
                     'Name': get_value(user, 'name'),
                     'Gender': get_value(user, 'gender_identity'),
-                    'City': get_value(user, 'city'),
+                    'City': format_location_display(user, column_mapping) if column_mapping else get_value(user, 'city'),
                     'Type': 'Excluded'
                 })
         

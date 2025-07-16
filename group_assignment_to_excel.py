@@ -36,6 +36,38 @@ GENDER_COLOR = {
     'lgbtq': '90EE90',
 }
 
+def format_location_display(member, column_mapping):
+    """Format location display based on residing_ph status"""
+    residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
+    
+    if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+        # Philippines resident - show "city, province" format
+        city = member.get(column_mapping.get('city'), '')
+        province = member.get(column_mapping.get('province'), '')
+        
+        # Use "MM" as acronym for Metro Manila
+        if province and province.lower() == 'metro manila':
+            province = 'MM'
+        
+        if city and province:
+            return f"{city}, {province}"
+        elif city:
+            return city
+        elif province:
+            return province
+        else:
+            return ''
+    else:
+        # International resident - show "State, Country"
+        state = member.get(column_mapping.get('state'), '')
+        country = member.get(column_mapping.get('country'), '')
+        if state and country:
+            return f"{state}, {country}"
+        elif country:
+            return country
+        else:
+            return member.get(column_mapping.get('city'), '')
+
 # Define similar country regions for grouping
 SIMILAR_COUNTRIES = {
     'southeast_asia': ['Philippines', 'Indonesia', 'Malaysia', 'Thailand', 'Vietnam', 'Singapore', 'Myanmar', 'Cambodia', 'Laos', 'Brunei'],
@@ -79,240 +111,6 @@ def get_country_region(country):
         if country in countries:
             return region
     return 'other'
-
-def merge_small_groups_with_preference_separation(groups_dict, max_group_size=5, column_mapping=None):
-    """Merge groups with less than max_group_size members, keeping preferences separate and grouping by most specific location first."""
-    merged_groups = {}
-    small_groups = []
-    normal_groups = {}
-    
-    # Separate small groups from normal groups
-    for group_name, members in groups_dict.items():
-        if len(members) < max_group_size:
-            small_groups.append((group_name, members))
-        else:
-            normal_groups[group_name] = members
-    
-    if not small_groups:
-        return groups_dict
-    
-    # Step 1: Try to merge by most specific location (province for PH, country/state for international)
-    specific_location_groups = defaultdict(list)
-    for group_name, members in small_groups:
-        if not members:
-            continue
-        # Determine preference type
-        is_same_gender = False
-        if 'male' in group_name.lower() or 'female' in group_name.lower() or 'lgbtq' in group_name.lower():
-            is_same_gender = True
-        # Extract gender key
-        gender_key = 'unknown'
-        if 'male' in group_name.lower():
-            gender_key = 'male'
-        elif 'female' in group_name.lower():
-            gender_key = 'female'
-        elif 'lgbtq' in group_name.lower():
-            gender_key = 'lgbtq+'
-        elif 'no_preference' in group_name.lower():
-            gender_key = 'no_preference'
-        # Location keys
-        member = members[0]
-        if column_mapping:
-            residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')) == '1'
-            if residing_ph:
-                province = member.get(column_mapping.get('province'), 'Unknown Province')
-                key = ("same_gender" if is_same_gender else "no_preference", gender_key, "PH", province)
-            else:
-                country = member.get(column_mapping.get('country'), 'Unknown Country')
-                state = member.get(column_mapping.get('state'), 'Unknown State')
-                key = ("same_gender" if is_same_gender else "no_preference", gender_key, country, state)
-        else:
-            # Fallback to old method
-            residing_ph = str(member.get('residing_ph', '0')) == '1'
-            if residing_ph:
-                province = member.get('province', 'Unknown Province')
-                key = ("same_gender" if is_same_gender else "no_preference", gender_key, "PH", province)
-            else:
-                country = member.get('country', 'Unknown Country')
-                state = member.get('state', 'Unknown State')
-                key = ("same_gender" if is_same_gender else "no_preference", gender_key, country, state)
-        specific_location_groups[key].extend(members)
-    
-    # Merge by specific location
-    leftovers = []
-    group_counter = len(normal_groups) + 1
-    for key, all_members in specific_location_groups.items():
-        for i in range(0, len(all_members), max_group_size):
-            chunk = all_members[i:i+max_group_size]
-            if len(chunk) == max_group_size or (len(chunk) >= 2 and i == 0 and len(all_members) < max_group_size):
-                # Only create a group if full or if this is the only group for this location
-                pref_type, gender_key, loc1, loc2 = key
-                if loc1 == "PH":
-                    location_info = f"Province: {loc2}"
-                else:
-                    location_info = f"Country: {loc1}, State: {loc2}"
-                merged_groups[f"Group {group_counter} ({pref_type}, {gender_key}, {location_info})"] = chunk
-                group_counter += 1
-            else:
-                leftovers.extend(chunk)
-    
-    # Step 2: Merge remaining leftovers by region, keeping Philippines separate
-    philippines_groups = defaultdict(list)
-    international_groups = defaultdict(list)
-    
-    for member in leftovers:
-        # Determine preference type
-        if column_mapping:
-            gender_pref = str(member.get(column_mapping.get('gender_preference'), '')).lower()
-            if gender_pref == 'same_gender':
-                if str(member.get(column_mapping.get('gender_identity'), '')).upper() == 'LGBTQ+':
-                    gender_key = f"lgbtq+_{str(member.get(column_mapping.get('sex'), '')).lower()}"
-                else:
-                    gender_key = str(member.get(column_mapping.get('gender_identity'), '')).lower()
-                pref_type = 'same_gender'
-            else:
-                gender_key = 'no_preference'
-                pref_type = 'no_preference'
-            
-            # Separate Philippines from international
-            country = member.get(column_mapping.get('country'), 'Unknown Country')
-        else:
-            # Fallback to old method
-            gender_pref = str(member.get('gender_preference', '')).lower()
-            if gender_pref == 'same_gender':
-                if str(member.get('gender_identity', '')).upper() == 'LGBTQ+':
-                    gender_key = f"lgbtq+_{str(member.get('sex', '')).lower()}"
-                else:
-                    gender_key = str(member.get('gender_identity', '')).lower()
-                pref_type = 'same_gender'
-            else:
-                gender_key = 'no_preference'
-                pref_type = 'no_preference'
-            
-            # Separate Philippines from international
-            country = member.get('country', 'Unknown Country')
-        
-        if country == 'Philippines':
-            # For Philippines, group by preference and gender
-            philippines_groups[(pref_type, gender_key)].append(member)
-        else:
-            # For international, group by region
-            region = get_country_region(country)
-            international_groups[(pref_type, gender_key, region)].append(member)
-    # Merge Philippines groups
-    for key, all_members in philippines_groups.items():
-        pref_type, gender_key = key
-        for i in range(0, len(all_members), max_group_size):
-            chunk = all_members[i:i+max_group_size]
-            merged_groups[f"Group {group_counter} ({pref_type}, {gender_key}, Philippines)"] = chunk
-            group_counter += 1
-    
-    # Merge international groups by region
-    for key, all_members in international_groups.items():
-        pref_type, gender_key, region = key
-        for i in range(0, len(all_members), max_group_size):
-            chunk = all_members[i:i+max_group_size]
-            # Region name
-            if region == 'southeast_asia':
-                location_info = "Southeast Asia"
-            elif region == 'east_asia':
-                location_info = "East Asia"
-            elif region == 'south_asia':
-                location_info = "South Asia"
-            elif region == 'north_america':
-                location_info = "North America"
-            elif region == 'europe':
-                location_info = "Europe"
-            elif region == 'middle_east':
-                location_info = "Middle East"
-            elif region == 'africa':
-                location_info = "Africa"
-            elif region == 'oceania':
-                location_info = "Oceania"
-            else:
-                location_info = "International"
-            merged_groups[f"Group {group_counter} ({pref_type}, {gender_key}, {location_info})"] = chunk
-            group_counter += 1
-    # Combine normal groups with merged groups
-    final_groups = {**normal_groups, **merged_groups}
-    return final_groups
-
-def merge_small_groups(groups_dict, max_group_size=5):
-    """Merge groups with less than max_group_size members with similar countries"""
-    merged_groups = {}
-    small_groups = []
-    normal_groups = {}
-    
-    # Separate small groups from normal groups
-    for group_name, members in groups_dict.items():
-        if len(members) < max_group_size:
-            small_groups.append((group_name, members))
-        else:
-            normal_groups[group_name] = members
-    
-    if not small_groups:
-        return groups_dict
-    
-    # Group small groups by gender preference and country region
-    small_groups_by_region = defaultdict(list)
-    
-    for group_name, members in small_groups:
-        if not members:
-            continue
-        
-        # Extract gender preference from group name
-        gender_key = 'unknown'
-        if 'male' in group_name.lower():
-            gender_key = 'male'
-        elif 'female' in group_name.lower():
-            gender_key = 'female'
-        elif 'lgbtq' in group_name.lower():
-            gender_key = 'lgbtq+'
-        elif 'no_preference' in group_name.lower():
-            gender_key = 'no_preference'
-        
-        # Get country region for the first member (assuming all members in a group are from same region)
-        # Use the old method since this function doesn't have column_mapping
-        country_region = get_country_region(members[0].get('country', 'Unknown Country'))
-        
-        key = f"{gender_key}_{country_region}"
-        small_groups_by_region[key].extend(members)
-    
-    # Create merged groups
-    group_counter = len(normal_groups) + 1
-    
-    for region_key, all_members in small_groups_by_region.items():
-        # Split into chunks of max_group_size
-        for i in range(0, len(all_members), max_group_size):
-            chunk = all_members[i:i+max_group_size]
-            gender_key, country_region = region_key.split('_', 1)
-            
-            # Create descriptive group name
-            if country_region == 'southeast_asia':
-                location_info = "Southeast Asia"
-            elif country_region == 'east_asia':
-                location_info = "East Asia"
-            elif country_region == 'south_asia':
-                location_info = "South Asia"
-            elif country_region == 'north_america':
-                location_info = "North America"
-            elif country_region == 'europe':
-                location_info = "Europe"
-            elif country_region == 'middle_east':
-                location_info = "Middle East"
-            elif country_region == 'africa':
-                location_info = "Africa"
-            elif country_region == 'oceania':
-                location_info = "Oceania"
-            else:
-                location_info = "International"
-            
-            merged_groups[f"Group {group_counter} ({gender_key}, {location_info})"] = chunk
-            group_counter += 1
-    
-    # Combine normal groups with merged groups
-    final_groups = {**normal_groups, **merged_groups}
-    return final_groups
 
 def apply_color_to_cell(cell, gender_identity, same_gender=None, kaizen_client_type=None):
     gender_identity = str(gender_identity).lower()
@@ -545,11 +343,16 @@ def group_participants(data, column_mapping):
         print(f"User {user_id}: gender_preference = '{gender_pref}'")
         
         if gender_pref == 'same_gender':
-            # Special handling for LGBTQ+
-            if str(get_value(row, 'gender_identity', '')).upper() == 'LGBTQ+':
-                gender_key = f"lgbtq+_{str(get_value(row, 'sex', '')).lower()}"
+            # For same_gender preference, use biological sex to ensure male/female separation
+            sex = str(get_value(row, 'sex', '')).lower()
+            gender_identity = str(get_value(row, 'gender_identity', '')).upper()
+            
+            if gender_identity == 'LGBTQ+':
+                # LGBTQ+ participants are grouped by their biological sex for same_gender preference
+                gender_key = f"lgbtq+_{sex}"
             else:
-                gender_key = str(get_value(row, 'gender_identity', '')).lower()
+                # Use biological sex for strict male/female separation
+                gender_key = sex
         elif gender_pref == 'no_preference':
             gender_key = 'no_preference'
         else:
@@ -648,10 +451,8 @@ def group_participants(data, column_mapping):
                     print(f"          Created Group {group_counter} with {len(members[i:i+5])} members")
                     group_counter += 1
     
-    # Merge small groups with similar countries, but keep same_gender and no_preference separate
-    print(f"Before merging: {len(grouped)} groups")
-    grouped = merge_small_groups_with_preference_separation(grouped, max_group_size=5, column_mapping=column_mapping)
-    print(f"After merging: {len(grouped)} groups")
+    # No merging of small groups - keep all groups as created
+    print(f"Created {len(grouped)} regular groups (no merging)")
     
     print(f"Created {len(requested_groups)} requested groups, {len(solo_groups)} solo groups and {len(grouped)} regular groups")
     print(f"Excluded {len(excluded_users)} users with joiningAsStudent=False")
@@ -681,21 +482,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             for i in range(5):
                 if i < len(group):
                     member = group[i]
-                    # Determine location display based on residing_ph
-                    residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
-                    if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
-                        # Philippines resident - show city
-                        location_display = member.get(column_mapping.get('city'), '')
-                    else:
-                        # International resident - show "State, Country"
-                        state = member.get(column_mapping.get('state'), '')
-                        country = member.get(column_mapping.get('country'), '')
-                        if state and country:
-                            location_display = f"{state}, {country}"
-                        elif country:
-                            location_display = country
-                        else:
-                            location_display = member.get(column_mapping.get('city'), '')
+                    location_display = format_location_display(member, column_mapping)
                     
                     row.extend([
                         member.get(column_mapping.get('user_id'), ''),
@@ -737,21 +524,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         for i in range(5):
             if i < len(group):
                 member = group[i]
-                # Determine location display based on residing_ph
-                residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
-                if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
-                    # Philippines resident - show city
-                    location_display = member.get(column_mapping.get('city'), '')
-                else:
-                    # International resident - show "State, Country"
-                    state = member.get(column_mapping.get('state'), '')
-                    country = member.get(column_mapping.get('country'), '')
-                    if state and country:
-                        location_display = f"{state}, {country}"
-                    elif country:
-                        location_display = country
-                    else:
-                        location_display = member.get(column_mapping.get('city'), '')
+                location_display = format_location_display(member, column_mapping)
                 
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
@@ -792,21 +565,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         for i in range(5):
             if i < len(members):
                 member = members[i]
-                # Determine location display based on residing_ph
-                residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
-                if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
-                    # Philippines resident - show city
-                    location_display = member.get(column_mapping.get('city'), '')
-                else:
-                    # International resident - show "State, Country"
-                    state = member.get(column_mapping.get('state'), '')
-                    country = member.get(column_mapping.get('country'), '')
-                    if state and country:
-                        location_display = f"{state}, {country}"
-                    elif country:
-                        location_display = country
-                    else:
-                        location_display = member.get(column_mapping.get('city'), '')
+                location_display = format_location_display(member, column_mapping)
                 
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
@@ -845,21 +604,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             row = [f"Excluded {idx}"]
             
             # Add user data
-            # Determine location display based on residing_ph
-            residing_ph = str(user.get(column_mapping.get('residing_ph'), '0')).strip().lower()
-            if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
-                # Philippines resident - show city
-                location_display = user.get(column_mapping.get('city'), '')
-            else:
-                # International resident - show "State, Country"
-                state = user.get(column_mapping.get('state'), '')
-                country = user.get(column_mapping.get('country'), '')
-                if state and country:
-                    location_display = f"{state}, {country}"
-                elif country:
-                    location_display = country
-                else:
-                    location_display = user.get(column_mapping.get('city'), '')
+            location_display = format_location_display(user, column_mapping)
             
             row.extend([
                 user.get(column_mapping.get('user_id'), ''),
