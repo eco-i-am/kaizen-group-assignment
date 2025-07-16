@@ -563,6 +563,27 @@ def show_api_page():
     if st.button("🔍 Test API Connection", type="secondary", use_container_width=True):
         test_api_connection(api_url, access_token, page_number)
     
+    # Merge data section
+    st.subheader("🔗 Merge Data")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("👥 Fetch All Users", type="primary", use_container_width=True):
+            fetch_all_api_data("https://portal.thelazylifter.com/api/users", access_token)
+            st.session_state.users_data = st.session_state.all_api_records
+            st.success("✅ Users data fetched and stored!")
+    
+    with col2:
+        if st.button("📋 Fetch All Grouping Preferences", type="primary", use_container_width=True):
+            fetch_all_api_data("https://portal.thelazylifter.com/api/grouping_preferences", access_token)
+            st.session_state.grouping_data = st.session_state.all_api_records
+            st.success("✅ Grouping preferences data fetched and stored!")
+    
+    # Merge and download
+    if st.button("🔗 Merge & Download Excel", type="secondary", use_container_width=True):
+        merge_and_download_excel(access_token)
+    
     # Display cached data if available
     if 'api_data' in st.session_state or 'all_api_records' in st.session_state:
         st.subheader("📋 API Data Table")
@@ -958,6 +979,130 @@ def fetch_all_api_data(api_url, access_token):
         st.error(f"❌ Connection error: {str(e)}")
     except Exception as e:
         st.error(f"❌ Unexpected error: {str(e)}")
+        st.error(f"Error type: {type(e).__name__}")
+
+def merge_and_download_excel(access_token):
+    """Merge users and grouping preferences data and download as Excel"""
+    try:
+        # Check if both datasets are available
+        if 'users_data' not in st.session_state:
+            st.error("❌ Users data not found. Please fetch users data first.")
+            return
+        
+        if 'grouping_data' not in st.session_state:
+            st.error("❌ Grouping preferences data not found. Please fetch grouping preferences data first.")
+            return
+        
+        users_data = st.session_state.users_data
+        grouping_data = st.session_state.grouping_data
+        
+        st.info(f"📊 Merging {len(users_data)} users with {len(grouping_data)} grouping preferences...")
+        
+        # Convert to DataFrames
+        users_df = pd.DataFrame(users_data)
+        grouping_df = pd.DataFrame(grouping_data)
+        
+        # Normalize data types to prevent display issues
+        for df in [users_df, grouping_df]:
+            for col in df.columns:
+                try:
+                    df[col] = df[col].apply(lambda x: str(x) if isinstance(x, (list, dict, tuple)) or pd.isna(x) else x)
+                    df[col] = df[col].astype(str)
+                except:
+                    df[col] = "Data conversion error"
+        
+        # Find the user ID field in grouping preferences
+        user_id_field = None
+        for col in grouping_df.columns:
+            if 'user' in col.lower() and ('id' in col.lower() or 'user' in col.lower()):
+                user_id_field = col
+                break
+        
+        if user_id_field is None:
+            st.error("❌ Could not find user ID field in grouping preferences data.")
+            st.write("Available columns in grouping preferences:")
+            st.write(list(grouping_df.columns))
+            return
+        
+        # Find the user ID field in users data
+        users_id_field = None
+        for col in users_df.columns:
+            if 'id' in col.lower() and 'user' not in col.lower():
+                users_id_field = col
+                break
+        
+        if users_id_field is None:
+            st.error("❌ Could not find ID field in users data.")
+            st.write("Available columns in users data:")
+            st.write(list(users_df.columns))
+            return
+        
+        # Merge the data
+        merged_df = pd.merge(
+            grouping_df, 
+            users_df, 
+            left_on=user_id_field, 
+            right_on=users_id_field, 
+            how='left'
+        )
+        
+        st.success(f"✅ Successfully merged data! Result: {len(merged_df)} records")
+        
+        # Show merged data info
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Records", len(merged_df))
+        with col2:
+            st.metric("Users Data", len(users_df))
+        with col3:
+            st.metric("Grouping Preferences", len(grouping_df))
+        
+        # Create Excel file with multiple sheets
+        output_buffer = io.BytesIO()
+        
+        with pd.ExcelWriter(output_buffer, engine='openpyxl') as writer:
+            # Main merged data
+            merged_df.to_excel(writer, sheet_name='Merged Data', index=False)
+            
+            # Individual datasets
+            users_df.to_excel(writer, sheet_name='Users Data', index=False)
+            grouping_df.to_excel(writer, sheet_name='Grouping Preferences', index=False)
+            
+            # Summary sheet
+            summary_data = {
+                'Metric': ['Total Records', 'Users Data', 'Grouping Preferences', 'Merged Records'],
+                'Count': [len(merged_df), len(users_df), len(grouping_df), len(merged_df)]
+            }
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        output_buffer.seek(0)
+        
+        # Download button
+        st.download_button(
+            label="📥 Download Merged Excel File",
+            data=output_buffer.getvalue(),
+            file_name=f"merged_users_grouping_preferences_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        
+        # Show preview of merged data
+        st.subheader("📊 Merged Data Preview")
+        st.dataframe(merged_df.head(10), use_container_width=True)
+        
+        # Show column mapping info
+        with st.expander("🔍 Data Mapping Information"):
+            st.write(f"**User ID Field in Grouping Preferences:** {user_id_field}")
+            st.write(f"**ID Field in Users Data:** {users_id_field}")
+            st.write(f"**Merge Type:** Left join (all grouping preferences with matching users)")
+            st.write(f"**Total Columns:** {len(merged_df.columns)}")
+            st.write("**Columns:**")
+            for i, col in enumerate(merged_df.columns, 1):
+                st.write(f"{i}. {col}")
+        
+    except Exception as e:
+        st.error(f"❌ Error merging data: {str(e)}")
         st.error(f"Error type: {type(e).__name__}")
 
 def show_settings_page():
