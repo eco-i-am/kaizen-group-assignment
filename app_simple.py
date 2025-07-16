@@ -1246,6 +1246,14 @@ def merge_and_download_excel(access_token):
         
         # Clean accountabilityBuddies field - replace None with blank string if no emails
         if 'accountabilityBuddies' in merged_df.columns:
+            # First, check if hasAccountabilityBuddies is False and make accountabilityBuddies blank
+            if 'hasAccountabilityBuddies' in merged_df.columns:
+                # Convert hasAccountabilityBuddies to boolean and make accountabilityBuddies blank if False
+                merged_df['hasAccountabilityBuddies'] = merged_df['hasAccountabilityBuddies'].astype(str).str.lower()
+                mask = merged_df['hasAccountabilityBuddies'].isin(['false', '0', '0.0', 'no'])
+                merged_df.loc[mask, 'accountabilityBuddies'] = ''
+                st.info(f"🧹 Set accountabilityBuddies to blank for {mask.sum()} records where hasAccountabilityBuddies=False")
+            
             def clean_accountability_buddies(value):
                 if pd.isna(value) or value == 'None' or value == 'nan':
                     return ''
