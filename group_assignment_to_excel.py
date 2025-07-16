@@ -3,22 +3,26 @@ from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font
 
-# File paths
-INPUT_FILE = 'participants.csv'
+# File paths - Updated to use merged Excel file
+INPUT_FILE = 'merged_users_grouping_preferences.xlsx'  # Change this to your merged file
 OUTPUT_FILE = 'grouped_participants.xlsx'
 
-# Column mapping (0-based index)
-COL_NAME = 1
-COL_GENDER_IDENTITY = 3  # D
-COL_SEX = 7              # H
-COL_RESIDING_PH = 8      # I
-COL_GENDER_PREF = 10     # K
-COL_COUNTRY = 16         # Q
-COL_PROVINCE = 17        # R
-COL_CITY = 18            # S
-COL_STATE = 19           # T
-COL_GO_SOLO = 20         # U
-COL_USER_ID = 0          # A (assuming user_id is the first column)
+# Column mapping for merged data (will be dynamically determined)
+# These are the expected column names in the merged data
+EXPECTED_COLUMNS = {
+    'user_id': ['user_id', 'id', 'userid', 'user id', 'id_y', 'id_x'],
+    'name': ['name', 'full_name', 'fullname', 'first_name', 'last_name', 'firstName', 'lastName'],
+    'gender_identity': ['gender_identity', 'gender', 'genderidentity', 'genderIdentity'],
+    'sex': ['sex', 'biological_sex', 'biologicalsex'],
+    'residing_ph': ['residing_ph', 'residing_in_philippines', 'philippines_resident', 'lingInPhilippineExperience', 'residingInPhilippines'],
+    'gender_preference': ['gender_preference', 'grouping_preference', 'preference', 'genderPref', 'groupGenderPreference'],
+    'country': ['country', 'nationality'],
+    'province': ['province', 'state_province'],
+    'city': ['city', 'municipality'],
+    'state': ['state', 'region', 'stat'],
+    'go_solo': ['go_solo', 'solo', 'prefer_solo', 'goSolo'],
+    'joining_as_student': ['joining_as_student', 'joiningAsStudent', 'student', 'is_student']
+}
 
 # Helper for color coding
 GENDER_COLOR = {
@@ -40,6 +44,30 @@ SIMILAR_COUNTRIES = {
     'oceania': ['Australia', 'New Zealand', 'Fiji', 'Papua New Guinea']
 }
 
+def find_column_mapping(df):
+    """Dynamically find column mapping based on available columns"""
+    mapping = {}
+    available_columns = [col.lower() for col in df.columns]
+    
+    for expected_key, possible_names in EXPECTED_COLUMNS.items():
+        found = False
+        for possible_name in possible_names:
+            if possible_name.lower() in available_columns:
+                # Find the exact column name (case-insensitive match)
+                for col in df.columns:
+                    if col.lower() == possible_name.lower():
+                        mapping[expected_key] = col
+                        found = True
+                        break
+                if found:
+                    break
+        
+        if not found:
+            print(f"Warning: Could not find column for {expected_key}")
+            mapping[expected_key] = None
+    
+    return mapping
+
 def get_country_region(country):
     """Get the region for a given country"""
     country = str(country).strip()
@@ -48,7 +76,7 @@ def get_country_region(country):
             return region
     return 'other'
 
-def merge_small_groups_with_preference_separation(groups_dict, max_group_size=5):
+def merge_small_groups_with_preference_separation(groups_dict, max_group_size=5, column_mapping=None):
     """Merge groups with less than max_group_size members, keeping preferences separate and grouping by most specific location first."""
     merged_groups = {}
     small_groups = []
@@ -85,14 +113,25 @@ def merge_small_groups_with_preference_separation(groups_dict, max_group_size=5)
             gender_key = 'no_preference'
         # Location keys
         member = members[0]
-        residing_ph = str(member[COL_RESIDING_PH]) == '1'
-        if residing_ph:
-            province = member[COL_PROVINCE] if len(member) > COL_PROVINCE and member[COL_PROVINCE] else 'Unknown Province'
-            key = ("same_gender" if is_same_gender else "no_preference", gender_key, "PH", province)
+        if column_mapping:
+            residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')) == '1'
+            if residing_ph:
+                province = member.get(column_mapping.get('province'), 'Unknown Province')
+                key = ("same_gender" if is_same_gender else "no_preference", gender_key, "PH", province)
+            else:
+                country = member.get(column_mapping.get('country'), 'Unknown Country')
+                state = member.get(column_mapping.get('state'), 'Unknown State')
+                key = ("same_gender" if is_same_gender else "no_preference", gender_key, country, state)
         else:
-            country = member[COL_COUNTRY] if len(member) > COL_COUNTRY and member[COL_COUNTRY] else 'Unknown Country'
-            state = member[COL_STATE] if len(member) > COL_STATE and member[COL_STATE] else 'Unknown State'
-            key = ("same_gender" if is_same_gender else "no_preference", gender_key, country, state)
+            # Fallback to old method
+            residing_ph = str(member.get('residing_ph', '0')) == '1'
+            if residing_ph:
+                province = member.get('province', 'Unknown Province')
+                key = ("same_gender" if is_same_gender else "no_preference", gender_key, "PH", province)
+            else:
+                country = member.get('country', 'Unknown Country')
+                state = member.get('state', 'Unknown State')
+                key = ("same_gender" if is_same_gender else "no_preference", gender_key, country, state)
         specific_location_groups[key].extend(members)
     
     # Merge by specific location
@@ -119,19 +158,36 @@ def merge_small_groups_with_preference_separation(groups_dict, max_group_size=5)
     
     for member in leftovers:
         # Determine preference type
-        gender_pref = str(member[COL_GENDER_PREF]).lower()
-        if gender_pref == 'same_gender':
-            if str(member[COL_GENDER_IDENTITY]).upper() == 'LGBTQ+':
-                gender_key = f"lgbtq+_{str(member[COL_SEX]).lower()}"
+        if column_mapping:
+            gender_pref = str(member.get(column_mapping.get('gender_preference'), '')).lower()
+            if gender_pref == 'same_gender':
+                if str(member.get(column_mapping.get('gender_identity'), '')).upper() == 'LGBTQ+':
+                    gender_key = f"lgbtq+_{str(member.get(column_mapping.get('sex'), '')).lower()}"
+                else:
+                    gender_key = str(member.get(column_mapping.get('gender_identity'), '')).lower()
+                pref_type = 'same_gender'
             else:
-                gender_key = str(member[COL_GENDER_IDENTITY]).lower()
-            pref_type = 'same_gender'
+                gender_key = 'no_preference'
+                pref_type = 'no_preference'
+            
+            # Separate Philippines from international
+            country = member.get(column_mapping.get('country'), 'Unknown Country')
         else:
-            gender_key = 'no_preference'
-            pref_type = 'no_preference'
+            # Fallback to old method
+            gender_pref = str(member.get('gender_preference', '')).lower()
+            if gender_pref == 'same_gender':
+                if str(member.get('gender_identity', '')).upper() == 'LGBTQ+':
+                    gender_key = f"lgbtq+_{str(member.get('sex', '')).lower()}"
+                else:
+                    gender_key = str(member.get('gender_identity', '')).lower()
+                pref_type = 'same_gender'
+            else:
+                gender_key = 'no_preference'
+                pref_type = 'no_preference'
+            
+            # Separate Philippines from international
+            country = member.get('country', 'Unknown Country')
         
-        # Separate Philippines from international
-        country = member[COL_COUNTRY] if len(member) > COL_COUNTRY and member[COL_COUNTRY] else 'Unknown Country'
         if country == 'Philippines':
             # For Philippines, group by preference and gender
             philippines_groups[(pref_type, gender_key)].append(member)
@@ -212,7 +268,10 @@ def merge_small_groups(groups_dict, max_group_size=5):
             gender_key = 'no_preference'
         
         # Get country region for the first member (assuming all members in a group are from same region)
-        country_region = get_country_region(members[0][COL_COUNTRY])
+        if column_mapping:
+            country_region = get_country_region(members[0].get(column_mapping.get('country'), 'Unknown Country'))
+        else:
+            country_region = get_country_region(members[0].get('country', 'Unknown Country'))
         
         key = f"{gender_key}_{country_region}"
         small_groups_by_region[key].extend(members)
@@ -260,101 +319,208 @@ def apply_color_to_cell(cell, gender_identity, same_gender=None):
     if same_gender is not None and str(same_gender).lower() == "same_gender":
         cell.font = Font(bold=True)
 
-def group_participants(data):
+def group_participants(data, column_mapping):
     solo_groups = []
     grouped = defaultdict(list)
     group_counter = 1
     
     print(f"Total participants: {len(data)}")
     
+    # Helper function to get value safely
+    def get_value(row, key, default=''):
+        if column_mapping and key in column_mapping:
+            if isinstance(row, dict):
+                return row.get(column_mapping[key], default)
+            else:
+                # For list format, we can't use column mapping
+                return default
+        else:
+            # Fallback to old format (list indices)
+            if isinstance(row, list):
+                if key == 'go_solo':
+                    return row[20] if len(row) > 20 else default
+                elif key == 'user_id':
+                    return row[0] if len(row) > 0 else default
+                elif key == 'gender_preference':
+                    return row[10] if len(row) > 10 else default
+                elif key == 'gender_identity':
+                    return row[3] if len(row) > 3 else default
+                elif key == 'sex':
+                    return row[7] if len(row) > 7 else default
+                elif key == 'residing_ph':
+                    return row[8] if len(row) > 8 else default
+                elif key == 'country':
+                    return row[16] if len(row) > 16 else default
+                elif key == 'province':
+                    return row[17] if len(row) > 17 else default
+                elif key == 'city':
+                    return row[18] if len(row) > 18 else default
+                elif key == 'state':
+                    return row[19] if len(row) > 19 else default
+            return default
+    
+    # Filter out participants where joiningAsStudent is False (but keep NaN/missing values)
+    if column_mapping and 'joining_as_student' in column_mapping:
+        joining_col = column_mapping['joining_as_student']
+        # Keep participants where joiningAsStudent is True or NaN/missing
+        filtered_data = []
+        excluded_count = 0
+        for row in data:
+            joining_value = get_value(row, 'joining_as_student', 'True')
+            # Convert to string and check if it's explicitly False
+            joining_str = str(joining_value).strip().lower()
+            if joining_str in ['false', '0', '0.0', 'no']:
+                excluded_count += 1
+                user_id = get_value(row, 'user_id', 'Unknown')
+                print(f"Excluded User {user_id}: joiningAsStudent = '{joining_value}'")
+            else:
+                # Keep if True, NaN, or any other value (including missing)
+                filtered_data.append(row)
+        
+        data = filtered_data
+        print(f"Excluded {excluded_count} participants with joiningAsStudent=False")
+        print(f"Remaining participants: {len(data)}")
+    
     # 1. Handle Solo participants
     solo_count = 0
     for row in data:
-        if len(row) > COL_GO_SOLO:
-            go_solo_value = str(row[COL_GO_SOLO]).strip()
-            print(f"User {row[COL_USER_ID]}: Column U = '{go_solo_value}'")
-            # Handle both '1' and '1.0' formats
-            if go_solo_value == '1' or go_solo_value == '1.0':
-                solo_groups.append([row])
-                solo_count += 1
-                print(f"Added to solo: User {row[COL_USER_ID]}")
+        go_solo_value = str(get_value(row, 'go_solo', '0')).strip()
+        user_id = get_value(row, 'user_id', 'Unknown')
+        print(f"User {user_id}: go_solo = '{go_solo_value}'")
+        # Handle various formats: '1', '1.0', 'True', 'true'
+        if go_solo_value.lower() in ['1', '1.0', 'true']:
+            solo_groups.append([row])
+            solo_count += 1
+            print(f"Added to solo: User {user_id}")
     
     print(f"Found {solo_count} solo participants")
     
     # 2. Handle non-solo participants
-    non_solo = [row for row in data if len(row) <= COL_GO_SOLO or (str(row[COL_GO_SOLO]).strip() != '1' and str(row[COL_GO_SOLO]).strip() != '1.0')]
+    non_solo = [row for row in data if str(get_value(row, 'go_solo', '0')).strip().lower() not in ['1', '1.0', 'true']]
     print(f"Non-solo participants: {len(non_solo)}")
     
     # Group by gender preference
     gender_pref_groups = defaultdict(list)
+    print(f"Processing {len(non_solo)} non-solo participants for grouping...")
+    
     for row in non_solo:
-        gender_pref = str(row[COL_GENDER_PREF]).lower()
+        gender_pref = str(get_value(row, 'gender_preference', '')).lower()
+        user_id = get_value(row, 'user_id', 'Unknown')
+        print(f"User {user_id}: gender_preference = '{gender_pref}'")
+        
         if gender_pref == 'same_gender':
             # Special handling for LGBTQ+
-            if str(row[COL_GENDER_IDENTITY]).upper() == 'LGBTQ+':
-                gender_key = f"lgbtq+_{str(row[COL_SEX]).lower()}"
+            if str(get_value(row, 'gender_identity', '')).upper() == 'LGBTQ+':
+                gender_key = f"lgbtq+_{str(get_value(row, 'sex', '')).lower()}"
             else:
-                gender_key = str(row[COL_GENDER_IDENTITY]).lower()
+                gender_key = str(get_value(row, 'gender_identity', '')).lower()
         elif gender_pref == 'no_preference':
             gender_key = 'no_preference'
         else:
             gender_key = 'other'
+        
         gender_pref_groups[gender_key].append(row)
+        print(f"  -> Assigned to group: {gender_key}")
+    
+    print(f"Gender preference groups created:")
+    for key, members in gender_pref_groups.items():
+        print(f"  {key}: {len(members)} participants")
     
     # Now, within each gender group, group by location with hierarchical approach
     for gender_key, rows in gender_pref_groups.items():
+        print(f"\nProcessing gender group: {gender_key} ({len(rows)} participants)")
+        
         # Split by PH or not
-        ph_rows = [r for r in rows if str(r[COL_RESIDING_PH]) == '1']
-        non_ph_rows = [r for r in rows if str(r[COL_RESIDING_PH]) == '0']
+        ph_rows = []
+        non_ph_rows = []
+        
+        # Debug: Check what values are in the residing_ph column
+        ph_values = []
+        for r in rows[:5]:  # Check first 5 participants
+            ph_val = get_value(r, 'residing_ph', '0')
+            ph_values.append(ph_val)
+            user_id = get_value(r, 'user_id', 'Unknown')
+            print(f"    User {user_id}: residing_ph = '{ph_val}' (type: {type(ph_val)})")
+        
+        print(f"    Sample residing_ph values: {ph_values}")
+        
+        for r in rows:
+            ph_val = str(get_value(r, 'residing_ph', '0')).strip().lower()
+            if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                ph_rows.append(r)
+            elif ph_val in ['0', '0.0', 'false', 'no']:
+                non_ph_rows.append(r)
+            else:
+                # For unknown values, treat as international
+                non_ph_rows.append(r)
+                user_id = get_value(r, 'user_id', 'Unknown')
+                print(f"    User {user_id}: unknown residing_ph value '{ph_val}', treating as international")
+        
+        print(f"  Philippines residents: {len(ph_rows)}")
+        print(f"  International residents: {len(non_ph_rows)}")
         
         # Group Philippines participants by Province -> City hierarchy
         province_groups = defaultdict(list)
         for r in ph_rows:
-            province = r[COL_PROVINCE] if len(r) > COL_PROVINCE and r[COL_PROVINCE] else 'Unknown Province'
+            province = get_value(r, 'province', 'Unknown Province')
             province_groups[province].append(r)
         
+        print(f"  Philippines provinces found: {list(province_groups.keys())}")
+        
         for province, province_members in province_groups.items():
+            print(f"    Province '{province}': {len(province_members)} participants")
             # Further group by city within each province
             city_groups = defaultdict(list)
             for r in province_members:
-                city = r[COL_CITY] if len(r) > COL_CITY and r[COL_CITY] else 'Unknown City'
+                city = get_value(r, 'city', 'Unknown City')
                 city_groups[city].append(r)
             
+            print(f"      Cities in {province}: {list(city_groups.keys())}")
+            
             for city, members in city_groups.items():
+                print(f"        City '{city}': {len(members)} participants")
                 # Split into chunks of 5
                 for i in range(0, len(members), 5):
                     location_info = f"Province: {province}, City: {city}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = members[i:i+5]
+                    print(f"          Created Group {group_counter} with {len(members[i:i+5])} members")
                     group_counter += 1
         
         # Group International participants by Country -> State hierarchy
         country_groups = defaultdict(list)
         for r in non_ph_rows:
-            country = r[COL_COUNTRY] if len(r) > COL_COUNTRY and r[COL_COUNTRY] else 'Unknown Country'
+            country = get_value(r, 'country', 'Unknown Country')
             country_groups[country].append(r)
         
+        print(f"  International countries found: {list(country_groups.keys())}")
+        
         for country, country_members in country_groups.items():
+            print(f"    Country '{country}': {len(country_members)} participants")
             # Further group by state within each country
             state_groups = defaultdict(list)
             for r in country_members:
-                state = r[COL_STATE] if len(r) > COL_STATE and r[COL_STATE] else 'Unknown State'
+                state = get_value(r, 'state', 'Unknown State')
                 state_groups[state].append(r)
             
+            print(f"      States in {country}: {list(state_groups.keys())}")
+            
             for state, members in state_groups.items():
+                print(f"        State '{state}': {len(members)} participants")
                 for i in range(0, len(members), 5):
                     location_info = f"Country: {country}, State: {state}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = members[i:i+5]
+                    print(f"          Created Group {group_counter} with {len(members[i:i+5])} members")
                     group_counter += 1
     
     # Merge small groups with similar countries, but keep same_gender and no_preference separate
     print(f"Before merging: {len(grouped)} groups")
-    grouped = merge_small_groups_with_preference_separation(grouped, max_group_size=5)
+    grouped = merge_small_groups_with_preference_separation(grouped, max_group_size=5, column_mapping=column_mapping)
     print(f"After merging: {len(grouped)} groups")
     
     print(f"Created {len(solo_groups)} solo groups and {len(grouped)} regular groups")
     return solo_groups, grouped
 
-def save_to_excel(solo_groups, grouped, filename_or_buffer):
+def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping):
     wb = Workbook()
     ws = wb.active
     ws.title = "Grouped Members"
@@ -375,25 +541,35 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer):
         for i in range(5):
             if i < len(group):
                 member = group[i]
-                row.extend([member[COL_USER_ID], member[COL_NAME], member[COL_CITY]])
+                row.extend([
+                    member.get(column_mapping.get('user_id'), ''),
+                    member.get(column_mapping.get('name'), ''),
+                    member.get(column_mapping.get('city'), '')
+                ])
             else:
                 row.extend(["", "", ""])
         # Add extra info for the first member
         member = group[0]
         row.extend([
-            member[COL_GENDER_IDENTITY], member[COL_SEX], member[COL_RESIDING_PH], member[COL_GENDER_PREF],
-            member[COL_COUNTRY], member[COL_PROVINCE], member[COL_CITY], member[COL_STATE]
+            member.get(column_mapping.get('gender_identity'), ''),
+            member.get(column_mapping.get('sex'), ''),
+            member.get(column_mapping.get('residing_ph'), ''),
+            member.get(column_mapping.get('gender_preference'), ''),
+            member.get(column_mapping.get('country'), ''),
+            member.get(column_mapping.get('province'), ''),
+            member.get(column_mapping.get('city'), ''),
+            member.get(column_mapping.get('state'), '')
         ])
         ws.append(row)
-        print(f"Added solo group {idx} with user {member[COL_USER_ID]}")
+        print(f"Added solo group {idx} with user {member.get(column_mapping.get('user_id'), 'Unknown')}")
         # Color code user_id and name cells for each member
         for i in range(5):
             if i < len(group):
                 member = group[i]
                 # User ID cell: col 2, 5, 8, 11, 14
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member[COL_GENDER_IDENTITY])
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
                 # Name cell: col 3, 6, 9, 12, 15
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member[COL_GENDER_IDENTITY])
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''))
     
     # Write grouped participants
     print(f"Writing {len(grouped)} regular groups to Excel...")
@@ -402,22 +578,32 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer):
         for i in range(5):
             if i < len(members):
                 member = members[i]
-                row.extend([member[COL_USER_ID], member[COL_NAME], member[COL_CITY]])
+                row.extend([
+                    member.get(column_mapping.get('user_id'), ''),
+                    member.get(column_mapping.get('name'), ''),
+                    member.get(column_mapping.get('city'), '')
+                ])
             else:
                 row.extend(["", "", ""])
         # Add extra info for the first member
         member = members[0]
         row.extend([
-            member[COL_GENDER_IDENTITY], member[COL_SEX], member[COL_RESIDING_PH], member[COL_GENDER_PREF],
-            member[COL_COUNTRY], member[COL_PROVINCE], member[COL_CITY], member[COL_STATE]
+            member.get(column_mapping.get('gender_identity'), ''),
+            member.get(column_mapping.get('sex'), ''),
+            member.get(column_mapping.get('residing_ph'), ''),
+            member.get(column_mapping.get('gender_preference'), ''),
+            member.get(column_mapping.get('country'), ''),
+            member.get(column_mapping.get('province'), ''),
+            member.get(column_mapping.get('city'), ''),
+            member.get(column_mapping.get('state'), '')
         ])
         ws.append(row)
         # Color code user_id and name cells for each member
         for i in range(5):
             if i < len(members):
                 member = members[i]
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member[COL_GENDER_IDENTITY])
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member[COL_GENDER_IDENTITY])
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''))
     
     # Check if filename_or_buffer is a string (file path) or BytesIO buffer
     if isinstance(filename_or_buffer, str):
@@ -429,10 +615,33 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer):
         print("Groups have been saved to buffer.")
 
 def main():
-    df = pd.read_csv(INPUT_FILE)
-    data = df.values.tolist()
-    solo_groups, grouped = group_participants(data)
-    save_to_excel(solo_groups, grouped, OUTPUT_FILE)
+    # Read the merged Excel file
+    try:
+        df = pd.read_excel(INPUT_FILE, sheet_name='Merged Data')
+        print(f"Successfully read merged data with {len(df)} records")
+        print(f"Available columns: {list(df.columns)}")
+    except Exception as e:
+        print(f"Error reading Excel file: {e}")
+        print("Trying to read as CSV file instead...")
+        try:
+            df = pd.read_csv(INPUT_FILE)
+            print(f"Successfully read CSV file with {len(df)} records")
+        except Exception as e2:
+            print(f"Error reading CSV file: {e2}")
+            return
+    
+    # Find column mapping
+    column_mapping = find_column_mapping(df)
+    print(f"Column mapping: {column_mapping}")
+    
+    # Convert DataFrame to list of dictionaries
+    data = df.to_dict('records')
+    
+    # Group participants
+    solo_groups, grouped = group_participants(data, column_mapping)
+    
+    # Save to Excel
+    save_to_excel(solo_groups, grouped, OUTPUT_FILE, column_mapping)
 
 if __name__ == "__main__":
     main() 

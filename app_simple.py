@@ -8,16 +8,16 @@ import requests
 import json
 
 # Import the grouping logic from the existing script
-from group_assignment_to_excel import group_participants, save_to_excel
+from group_assignment_to_excel import group_participants, save_to_excel, find_column_mapping
 
-def create_download_buttons(solo_groups, grouped):
+def create_download_buttons(solo_groups, grouped, column_mapping=None):
     """Create download buttons for Excel and CSV files"""
     col1, col2 = st.columns(2)
     
     with col1:
         # Create Excel file
         output_buffer = io.BytesIO()
-        save_to_excel(solo_groups, grouped, output_buffer)
+        save_to_excel(solo_groups, grouped, output_buffer, column_mapping)
         output_buffer.seek(0)
         
         st.download_button(
@@ -31,14 +31,32 @@ def create_download_buttons(solo_groups, grouped):
     with col2:
         # Create CSV format
         csv_data = []
+        
+        # Helper function to get value safely
+        def get_value(participant, key, default=''):
+            if column_mapping and key in column_mapping:
+                return participant.get(column_mapping[key], default)
+            else:
+                # Fallback to old format
+                if key == 'user_id':
+                    return participant.get(0, default) if isinstance(participant, (list, tuple)) else participant.get('user_id', default)
+                elif key == 'name':
+                    return participant.get(1, default) if isinstance(participant, (list, tuple)) else participant.get('name', default)
+                elif key == 'gender_identity':
+                    return participant.get(3, default) if isinstance(participant, (list, tuple)) else participant.get('gender_identity', default)
+                elif key == 'city':
+                    return participant.get(18, default) if isinstance(participant, (list, tuple)) else participant.get('city', default)
+                else:
+                    return default
+        
         for i, group in enumerate(solo_groups, 1):
             participant = group[0]
             csv_data.append({
                 'Group': f'Solo {i}',
-                'User ID': participant[0],
-                'Name': participant[1],
-                'Gender': participant[3],
-                'City': participant[18] if len(participant) > 18 else '',
+                'User ID': get_value(participant, 'user_id'),
+                'Name': get_value(participant, 'name'),
+                'Gender': get_value(participant, 'gender_identity'),
+                'City': get_value(participant, 'city'),
                 'Type': 'Solo'
             })
         
@@ -46,10 +64,10 @@ def create_download_buttons(solo_groups, grouped):
             for member in members:
                 csv_data.append({
                     'Group': group_name,
-                    'User ID': member[0],
-                    'Name': member[1],
-                    'Gender': member[3],
-                    'City': member[18] if len(member) > 18 else '',
+                    'User ID': get_value(member, 'user_id'),
+                    'Name': get_value(member, 'name'),
+                    'Gender': get_value(member, 'gender_identity'),
+                    'City': get_value(member, 'city'),
                     'Type': 'Group'
                 })
         
@@ -156,7 +174,8 @@ def show_dashboard():
     if 'solo_groups' in st.session_state and 'grouped' in st.session_state:
         st.subheader("📤 Download Results")
         st.info("Groups have been created! You can download the results here.")
-        create_download_buttons(st.session_state.solo_groups, st.session_state.grouped)
+        column_mapping = st.session_state.get('column_mapping', None)
+        create_download_buttons(st.session_state.solo_groups, st.session_state.grouped, column_mapping)
         st.markdown("---")
     
     # Key metrics
@@ -211,83 +230,210 @@ def show_dashboard():
 def show_upload_page():
     st.header("📁 Upload Participant Data")
     
-    st.markdown("""
-    ### Upload your participant data file
-    The system supports CSV files with the following required columns:
-    - `user_id`: Unique participant identifier
-    - `gender_identity`: Gender identity (Male, Female, LGBTQ+)
-    - `sex`: Biological sex (Male, Female)
-    - `residing_in_philippines`: Location indicator (1 for PH, 0 for International)
-    - `group_gender_preference`: Grouping preference (same_gender, no_preference)
-    - `country`: Country of residence
-    - `province`: Province/State
-    - `city`: City
-    - `state`: State (for international participants)
-    - `go_solo`: Solo preference (1 for solo, 0 for group)
-    """)
-    
-    uploaded_file = st.file_uploader(
-        "Choose a CSV file",
-        type=['csv'],
-        help="Upload a CSV file with participant data"
+    # File type selection
+    file_type = st.radio(
+        "Choose file type:",
+        ["CSV File", "Excel File (Merged Data)"],
+        help="Select the type of file you want to upload"
     )
+    
+    if file_type == "CSV File":
+        st.markdown("""
+        ### Upload your participant data file
+        The system supports CSV files with the following required columns:
+        - `user_id`: Unique participant identifier
+        - `gender_identity`: Gender identity (Male, Female, LGBTQ+)
+        - `sex`: Biological sex (Male, Female)
+        - `residing_in_philippines`: Location indicator (1 for PH, 0 for International)
+        - `group_gender_preference`: Grouping preference (same_gender, no_preference)
+        - `country`: Country of residence
+        - `province`: Province/State
+        - `city`: City
+        - `state`: State (for international participants)
+        - `go_solo`: Solo preference (1 for solo, 0 for group)
+        """)
+        
+        uploaded_file = st.file_uploader(
+            "Choose a CSV file",
+            type=['csv'],
+            help="Upload a CSV file with participant data"
+        )
+    else:
+        st.markdown("""
+        ### Upload your merged Excel file
+        The system supports Excel files with merged user and grouping preference data.
+        The file should contain a "Merged Data" sheet with columns like:
+        - `user_id`, `full_name`, `gender_identity`, `biological_sex`
+        - `residing_in_philippines`, `grouping_preference`, `country`
+        - `state_province`, `city`, `region`, `prefer_solo`
+        
+        **Note:** The system will automatically detect column names and map them appropriately.
+        """)
+        
+        uploaded_file = st.file_uploader(
+            "Choose an Excel file",
+            type=['xlsx', 'xls'],
+            help="Upload an Excel file with merged data (should have 'Merged Data' sheet)"
+        )
     
     if uploaded_file is not None:
         try:
-            # Read the CSV file
-            data = pd.read_csv(uploaded_file)
-            
-            # Validate required columns
-            required_columns = [
-                'user_id', 'gender_identity', 'sex', 'residing_in_philippines',
-                'group_gender_preference', 'country', 'province', 'city', 'state', 'go_solo'
-            ]
-            
-            missing_columns = [col for col in required_columns if col not in data.columns]
-            
-            if missing_columns:
-                st.error(f"Missing required columns: {', '.join(missing_columns)}")
-                st.info("Please ensure your CSV file contains all required columns.")
-            else:
+            if file_type == "CSV File":
+                # Read the CSV file
+                data = pd.read_csv(uploaded_file)
+                
+                # Validate required columns
+                required_columns = [
+                    'user_id', 'gender_identity', 'sex', 'residing_in_philippines',
+                    'group_gender_preference', 'country', 'province', 'city', 'state', 'go_solo'
+                ]
+                
+                missing_columns = [col for col in required_columns if col not in data.columns]
+                
+                if missing_columns:
+                    st.error(f"Missing required columns: {', '.join(missing_columns)}")
+                    st.info("Please ensure your CSV file contains all required columns.")
+                    return
+                
                 # Store data in session state
                 st.session_state.participants_data = data
+                data_source = "CSV"
                 
-                st.success("✅ Data uploaded successfully!")
-                st.info(f"Loaded {len(data)} participants")
+            else:
+                # Read the Excel file
+                try:
+                    data = pd.read_excel(uploaded_file, sheet_name='Merged Data')
+                except Exception as e:
+                    st.error(f"Could not read 'Merged Data' sheet: {str(e)}")
+                    st.info("Please ensure your Excel file has a 'Merged Data' sheet.")
+                    return
                 
-                # Show data preview
-                st.subheader("📋 Data Preview")
-                st.dataframe(data.head(), use_container_width=True)
+                # Find column mapping
+                column_mapping = find_column_mapping(data)
                 
-                # Show data statistics
-                col1, col2 = st.columns(2)
+                # Check for essential columns using flexible mapping
+                essential_fields = ['user_id', 'gender_identity', 'gender_preference']
+                missing_essential = [field for field in essential_fields if not column_mapping.get(field)]
                 
-                with col1:
-                    st.subheader("📊 Data Statistics")
-                    st.write(f"**Total Participants:** {len(data)}")
-                    st.write(f"**Solo Participants:** {len(data[data['go_solo'] == 1])}")
-                    st.write(f"**Group Participants:** {len(data[data['go_solo'] == 0])}")
-                    st.write(f"**Philippines Residents:** {len(data[data['residing_in_philippines'] == 1])}")
+                if missing_essential:
+                    detected_cols = ', '.join(list(data.columns))
+                    st.error(f"Missing essential columns: {', '.join(missing_essential)}")
+                    st.info(f"Please ensure your Excel file contains columns for user_id, gender_identity, and gender_preference.\nDetected columns: {detected_cols}")
+                    st.info("The system accepts alternative column names such as 'genderPref', 'goSolo', etc. See documentation for details.")
+                    return
                 
-                with col2:
-                    st.subheader("🎯 Gender Preferences")
+                # Store data in session state
+                st.session_state.merged_data = data
+                st.session_state.column_mapping = column_mapping
+                data_source = "Merged Excel"
+            
+            # Show success message
+            st.success("✅ Data uploaded successfully!")
+            st.info(f"Loaded {len(data)} participants from {data_source}")
+            
+            # Show data preview
+            st.subheader("📋 Data Preview")
+            st.dataframe(data.head(), use_container_width=True)
+            
+            # Show column mapping for Excel files
+            if file_type == "Excel File (Merged Data)":
+                st.subheader("🔍 Column Mapping")
+                with st.expander("View detected column mappings"):
+                    for key, value in column_mapping.items():
+                        if value:
+                            st.write(f"**{key}:** {value}")
+                        else:
+                            st.write(f"**{key}:** ❌ Not found")
+            
+            # Show data statistics
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📊 Data Statistics")
+                st.write(f"**Total Participants:** {len(data)}")
+                
+                # Get solo count based on data type
+                if file_type == "CSV File":
+                    solo_count = len(data[data['go_solo'] == 1])
+                    group_count = len(data[data['go_solo'] == 0])
+                    ph_count = len(data[data['residing_in_philippines'] == 1])
+                else:
+                    go_solo_col = column_mapping.get('go_solo')
+                    if go_solo_col:
+                        go_solo_values = data[go_solo_col].astype(str).str.strip().str.lower()
+                        solo_count = go_solo_values.isin(['1', '1.0', 'true']).sum()
+                        group_count = len(data) - solo_count
+                    else:
+                        solo_count = 0
+                        group_count = len(data)
+                    
+                    residing_ph_col = column_mapping.get('residing_ph')
+                    if residing_ph_col:
+                        ph_values = data[residing_ph_col].astype(str).str.strip().str.lower()
+                        ph_count = ph_values.isin(['1', 'true', 'yes', 'ph', 'philippines']).sum()
+                    else:
+                        ph_count = 0
+                
+                st.write(f"**Solo Participants:** {solo_count}")
+                st.write(f"**Group Participants:** {group_count}")
+                st.write(f"**Philippines Residents:** {ph_count}")
+            
+            with col2:
+                st.subheader("🎯 Gender Preferences")
+                if file_type == "CSV File":
                     gender_pref_counts = data['group_gender_preference'].value_counts()
-                    for pref, count in gender_pref_counts.items():
-                        st.write(f"**{pref}:** {count}")
+                else:
+                    gender_pref_col = column_mapping.get('gender_preference')
+                    if gender_pref_col:
+                        gender_pref_counts = data[gender_pref_col].value_counts()
+                    else:
+                        gender_pref_counts = pd.Series({'Unknown': len(data)})
+                
+                for pref, count in gender_pref_counts.items():
+                    st.write(f"**{pref}:** {count}")
+            
+            # Show next steps
+            st.success("✅ Data is ready for group creation!")
+            st.info("💡 Go to the 'Create Groups' page to create groups from this data.")
         
         except Exception as e:
             st.error(f"Error reading file: {str(e)}")
-            st.info("Please ensure the file is a valid CSV format.")
+            if file_type == "CSV File":
+                st.info("Please ensure the file is a valid CSV format.")
+            else:
+                st.info("Please ensure the file is a valid Excel format with a 'Merged Data' sheet.")
 
 def show_grouping_page():
     st.header("👥 Create Groups")
     
-    if 'participants_data' not in st.session_state:
+    # Check for different data sources
+    has_csv_data = 'participants_data' in st.session_state
+    has_merged_data = 'merged_data' in st.session_state
+    
+    if not has_csv_data and not has_merged_data:
         st.warning("Please upload participant data first!")
-        st.info("Go to 'Upload Data' page to get started.")
+        st.info("Go to 'Upload Data' or 'API Data' page to get started.")
         return
     
-    data = st.session_state.participants_data
+    # Data source selection
+    if has_csv_data and has_merged_data:
+        data_source = st.radio(
+            "Choose data source:",
+            ["CSV Data", "Merged API Data"],
+            help="Select which dataset to use for group creation"
+        )
+    elif has_csv_data:
+        data_source = "CSV Data"
+    else:
+        data_source = "Merged API Data"
+    
+    # Get the appropriate data
+    if data_source == "CSV Data":
+        data = st.session_state.participants_data
+        data_format = "csv"
+    else:
+        data = st.session_state.merged_data
+        data_format = "merged"
     
     # Grouping options
     st.subheader("⚙️ Grouping Options")
@@ -341,15 +487,34 @@ def show_grouping_page():
     if st.button("🚀 Create Groups", type="primary", use_container_width=True):
         with st.spinner("Creating groups..."):
             try:
-                # Convert DataFrame to list format expected by the grouping function
-                data_list = data.values.tolist()
+                column_mapping = None
+                
+                if data_format == "merged":
+                    # For merged data, find column mapping
+                    column_mapping = find_column_mapping(data)
+                    st.info(f"📋 Column mapping detected: {len(column_mapping)} fields mapped")
+                    
+                    # Show column mapping details
+                    with st.expander("🔍 Column Mapping Details"):
+                        for key, value in column_mapping.items():
+                            if value:
+                                st.write(f"**{key}:** {value}")
+                            else:
+                                st.write(f"**{key}:** ❌ Not found")
+                    
+                    # Convert DataFrame to list of dictionaries
+                    data_list = data.to_dict('records')
+                else:
+                    # For CSV data, convert to list format
+                    data_list = data.values.tolist()
                 
                 # Call the grouping function
-                solo_groups, grouped = group_participants(data_list)
+                solo_groups, grouped = group_participants(data_list, column_mapping)
                 
                 # Store results in session state
                 st.session_state.solo_groups = solo_groups
                 st.session_state.grouped = grouped
+                st.session_state.column_mapping = column_mapping
                 
                 # Display results
                 st.success("✅ Groups created successfully!")
@@ -370,12 +535,26 @@ def show_grouping_page():
                 # Show groups preview
                 st.subheader("📋 Groups Preview")
                 
+                # Helper function to get participant info
+                def get_participant_info(participant, column_mapping):
+                    if column_mapping:
+                        user_id = participant.get(column_mapping.get('user_id'), 'Unknown')
+                        name = participant.get(column_mapping.get('name'), 'Unknown')
+                        gender = participant.get(column_mapping.get('gender_identity'), 'Unknown')
+                    else:
+                        # Fallback to old format
+                        user_id = participant[0] if len(participant) > 0 else 'Unknown'
+                        name = participant[1] if len(participant) > 1 else 'Unknown'
+                        gender = participant[3] if len(participant) > 3 else 'Unknown'
+                    return user_id, name, gender
+                
                 # Solo groups
                 if solo_groups:
                     st.write("**Solo Participants:**")
                     for i, group in enumerate(solo_groups[:5], 1):  # Show first 5
                         participant = group[0]
-                        st.write(f"  {i}. User {participant[0]} - {participant[1]} ({participant[3]})")
+                        user_id, name, gender = get_participant_info(participant, column_mapping)
+                        st.write(f"  {i}. User {user_id} - {name} ({gender})")
                 
                 # Regular groups
                 if grouped:
@@ -383,7 +562,8 @@ def show_grouping_page():
                     for i, (group_name, members) in enumerate(list(grouped.items())[:5], 1):  # Show first 5
                         st.write(f"  {i}. {group_name} ({len(members)} members)")
                         for member in members[:3]:  # Show first 3 members
-                            st.write(f"     - User {member[0]} - {member[1]}")
+                            user_id, name, gender = get_participant_info(member, column_mapping)
+                            st.write(f"     - User {user_id} - {name}")
                         if len(members) > 3:
                             st.write(f"     ... and {len(members) - 3} more")
                 
@@ -393,12 +573,15 @@ def show_grouping_page():
                 # Store results in session state for download
                 st.session_state.solo_groups = solo_groups
                 st.session_state.grouped = grouped
+                st.session_state.column_mapping = column_mapping
                 
-                create_download_buttons(solo_groups, grouped)
+                create_download_buttons(solo_groups, grouped, column_mapping)
             
             except Exception as e:
                 st.error(f"Error creating groups: {str(e)}")
                 st.info("Please check your data format and try again.")
+                import traceback
+                st.error(f"Error details: {traceback.format_exc()}")
 
 def show_analysis_page():
     st.header("📈 Analysis")
@@ -1087,6 +1270,9 @@ def merge_and_download_excel(access_token):
             use_container_width=True
         )
         
+        # Store merged data in session state for group creation
+        st.session_state.merged_data = merged_df
+        
         # Show preview of merged data
         st.subheader("📊 Merged Data Preview")
         st.dataframe(merged_df.head(10), use_container_width=True)
@@ -1100,6 +1286,10 @@ def merge_and_download_excel(access_token):
             st.write("**Columns:**")
             for i, col in enumerate(merged_df.columns, 1):
                 st.write(f"{i}. {col}")
+        
+        # Show next steps
+        st.success("✅ Merged data is now available for group creation!")
+        st.info("💡 Go to the 'Create Groups' page to use this merged data for group assignment.")
         
     except Exception as e:
         st.error(f"❌ Error merging data: {str(e)}")
