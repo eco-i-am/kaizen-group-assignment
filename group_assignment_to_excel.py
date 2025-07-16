@@ -4,7 +4,7 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font
 
 # File paths - Updated to use merged Excel file
-INPUT_FILE = 'merged_users_grouping_preferences.xlsx'  # Change this to your merged file
+INPUT_FILE = 'sample_merged_data.xlsx'  # Change this to your merged file
 OUTPUT_FILE = 'grouped_participants.xlsx'
 
 # Column mapping for merged data (will be dynamically determined)
@@ -22,7 +22,10 @@ EXPECTED_COLUMNS = {
     'state': ['state', 'region', 'stat'],
     'go_solo': ['go_solo', 'solo', 'prefer_solo', 'goSolo'],
     'joining_as_student': ['joining_as_student', 'joiningAsStudent', 'student', 'is_student'],
-    'kaizen_client_type': ['kaizen_client_type', 'kaizenClientType', 'client_type', 'clientType']
+    'kaizen_client_type': ['kaizen_client_type', 'kaizenClientType', 'client_type', 'clientType'],
+    'accountability_buddies': ['accountability_buddies', 'accountabilityBuddies', 'accountability_buddies', 'buddies'],
+    'has_accountability_buddies': ['has_accountability_buddies', 'hasAccountabilityBuddies', 'has_buddies'],
+    'email': ['email', 'user_email', 'email_address', 'useremail', 'userEmail']
 }
 
 # Helper for color coding
@@ -269,10 +272,8 @@ def merge_small_groups(groups_dict, max_group_size=5):
             gender_key = 'no_preference'
         
         # Get country region for the first member (assuming all members in a group are from same region)
-        if column_mapping:
-            country_region = get_country_region(members[0].get(column_mapping.get('country'), 'Unknown Country'))
-        else:
-            country_region = get_country_region(members[0].get('country', 'Unknown Country'))
+        # Use the old method since this function doesn't have column_mapping
+        country_region = get_country_region(members[0].get('country', 'Unknown Country'))
         
         key = f"{gender_key}_{country_region}"
         small_groups_by_region[key].extend(members)
@@ -395,9 +396,130 @@ def group_participants(data, column_mapping):
         print(f"Excluded {excluded_count} participants with joiningAsStudent=False")
         print(f"Remaining participants: {len(data)}")
     
-    # 1. Handle Solo participants
-    solo_count = 0
+    # 1. Handle Accountability Buddies (Requested Groups) - Process first
+    requested_groups = []
+    accountability_count = 0
+    
+    # First pass: collect all participants with non-empty accountabilityBuddies
+    accountability_participants = []
     for row in data:
+        accountability_buddies = get_value(row, 'accountability_buddies', '')
+        has_accountability_buddies = get_value(row, 'has_accountability_buddies', '0')
+        user_id = get_value(row, 'user_id', 'Unknown')
+        
+        # Check if has_accountability_buddies is True/1
+        has_buddies = str(has_accountability_buddies).strip().lower() in ['1', '1.0', 'true', 'yes']
+        
+        # Check if accountability_buddies field has valid data
+        has_buddy_data = accountability_buddies and str(accountability_buddies).strip() not in ['', 'None', 'nan', '[None]', '[None, None]', "{'1': None}"]
+        
+        if has_buddies and has_buddy_data:
+            accountability_participants.append(row)
+            print(f"User {user_id}: has_accountability_buddies={has_accountability_buddies}, accountability_buddies='{accountability_buddies}'")
+        elif has_buddies and not has_buddy_data:
+            print(f"User {user_id}: has_accountability_buddies={has_accountability_buddies} but no buddy data: '{accountability_buddies}'")
+        elif not has_buddies and has_buddy_data:
+            print(f"User {user_id}: has_accountability_buddies={has_accountability_buddies} but has buddy data: '{accountability_buddies}'")
+    
+    print(f"Found {len(accountability_participants)} participants with accountability buddies")
+    
+    # Create a mapping of email to user data for quick lookup
+    email_to_user = {}
+    for row in data:
+        # Use the column mapping to find email
+        email = get_value(row, 'email', '')
+        
+        if email and '@' in email:
+            email_to_user[email.lower().strip()] = row
+            user_id = get_value(row, 'user_id', 'Unknown')
+            print(f"User {user_id}: email = {email}")
+    
+    print(f"Created email mapping for {len(email_to_user)} users")
+    
+    # Process each participant with accountability buddies
+    processed_requests = set()  # Track processed requests to avoid duplicates
+    assigned_users = set()  # Track users already assigned to requested groups
+    
+    for participant in accountability_participants:
+        accountability_buddies = get_value(participant, 'accountability_buddies', '')
+        user_id = get_value(participant, 'user_id', 'Unknown')
+        participant_email = get_value(participant, 'email', '').lower().strip()
+        
+        # Skip if this participant is already assigned to a requested group
+        if participant_email in assigned_users:
+            print(f"Skipping User {user_id} ({participant_email}): already assigned to a requested group")
+            continue
+        
+        # Clean and extract emails from accountabilityBuddies
+        if isinstance(accountability_buddies, str):
+            # Remove brackets and quotes, split by comma
+            cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
+            requested_emails = [email.strip().lower() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+            
+            if requested_emails:
+                # Create a unique key for this request to avoid duplicates
+                request_key = ','.join(sorted(requested_emails))
+                
+                if request_key not in processed_requests:
+                    processed_requests.add(request_key)
+                    
+                    # Build the group: requester + all requested buddies
+                    group_members = [participant]  # Start with the requester
+                    assigned_users.add(participant_email)  # Mark requester as assigned
+                    
+                    # Add all requested buddies (only if not already assigned)
+                    found_buddies = []
+                    missing_buddies = []
+                    already_assigned_buddies = []
+                    
+                    for email in requested_emails:
+                        if email in email_to_user:
+                            buddy_user = email_to_user[email]
+                            buddy_email = get_value(buddy_user, 'email', '').lower().strip()
+                            
+                            # Check if this buddy is already assigned to a requested group
+                            if buddy_email in assigned_users:
+                                already_assigned_buddies.append(email)
+                                buddy_user_id = get_value(buddy_user, 'user_id', 'Unknown')
+                                print(f"  Skipping buddy {email} -> User {buddy_user_id}: already assigned to another requested group")
+                            else:
+                                group_members.append(buddy_user)
+                                assigned_users.add(buddy_email)  # Mark buddy as assigned
+                                found_buddies.append(email)
+                                buddy_user_id = get_value(buddy_user, 'user_id', 'Unknown')
+                                print(f"  Found buddy {email} -> User {buddy_user_id}")
+                        else:
+                            missing_buddies.append(email)
+                            print(f"  Missing buddy: {email}")
+                    
+                    if group_members:
+                        requested_groups.append(group_members)
+                        accountability_count += len(group_members)
+                        print(f"Created Requested Group with {len(group_members)} members:")
+                        print(f"  Requester: User {user_id}")
+                        print(f"  Requested emails: {requested_emails}")
+                        print(f"  Found buddies: {found_buddies}")
+                        if missing_buddies:
+                            print(f"  Missing buddies: {missing_buddies}")
+                        if already_assigned_buddies:
+                            print(f"  Already assigned buddies: {already_assigned_buddies}")
+    
+    print(f"Created {len(requested_groups)} requested groups with {accountability_count} participants")
+    print(f"Total users assigned to requested groups: {len(assigned_users)}")
+    
+    # 2. Handle Solo participants (from remaining data)
+    solo_count = 0
+    # Remove accountability participants and already assigned users from data for solo processing
+    remaining_data = []
+    for row in data:
+        user_email = get_value(row, 'email', '').lower().strip()
+        # Skip if user is in accountability participants or already assigned to requested groups
+        if row not in accountability_participants and user_email not in assigned_users:
+            remaining_data.append(row)
+    
+    print(f"Remaining participants for solo/regular grouping: {len(remaining_data)}")
+    
+    for row in remaining_data:
         go_solo_value = str(get_value(row, 'go_solo', '0')).strip()
         user_id = get_value(row, 'user_id', 'Unknown')
         print(f"User {user_id}: go_solo = '{go_solo_value}'")
@@ -409,8 +531,8 @@ def group_participants(data, column_mapping):
     
     print(f"Found {solo_count} solo participants")
     
-    # 2. Handle non-solo participants
-    non_solo = [row for row in data if str(get_value(row, 'go_solo', '0')).strip().lower() not in ['1', '1.0', 'true']]
+    # 3. Handle non-solo participants (from remaining data)
+    non_solo = [row for row in remaining_data if str(get_value(row, 'go_solo', '0')).strip().lower() not in ['1', '1.0', 'true']]
     print(f"Non-solo participants: {len(non_solo)}")
     
     # Group by gender preference
@@ -531,11 +653,11 @@ def group_participants(data, column_mapping):
     grouped = merge_small_groups_with_preference_separation(grouped, max_group_size=5, column_mapping=column_mapping)
     print(f"After merging: {len(grouped)} groups")
     
-    print(f"Created {len(solo_groups)} solo groups and {len(grouped)} regular groups")
+    print(f"Created {len(requested_groups)} requested groups, {len(solo_groups)} solo groups and {len(grouped)} regular groups")
     print(f"Excluded {len(excluded_users)} users with joiningAsStudent=False")
-    return solo_groups, grouped, excluded_users
+    return solo_groups, grouped, excluded_users, requested_groups
 
-def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None):
+def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None, requested_groups=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "Grouped Members"
@@ -548,6 +670,65 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         "User ID 5", "Name 5", "City 5",
         "Gender Identity", "Sex", "Residing in PH", "Gender Preference", "Country", "Province", "City", "State"
     ])
+    
+    # Write requested groups (accountability buddies)
+    if requested_groups:
+        print(f"Writing {len(requested_groups)} requested groups to Excel...")
+        for idx, group in enumerate(requested_groups, 1):
+            row = [f"Requested Group {idx}"]
+            
+            # Add user data for each member
+            for i in range(5):
+                if i < len(group):
+                    member = group[i]
+                    # Determine location display based on residing_ph
+                    residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
+                    if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                        # Philippines resident - show city
+                        location_display = member.get(column_mapping.get('city'), '')
+                    else:
+                        # International resident - show "State, Country"
+                        state = member.get(column_mapping.get('state'), '')
+                        country = member.get(column_mapping.get('country'), '')
+                        if state and country:
+                            location_display = f"{state}, {country}"
+                        elif country:
+                            location_display = country
+                        else:
+                            location_display = member.get(column_mapping.get('city'), '')
+                    
+                    row.extend([
+                        member.get(column_mapping.get('user_id'), ''),
+                        member.get(column_mapping.get('name'), ''),
+                        location_display
+                    ])
+                else:
+                    row.extend(["", "", ""])
+            
+            # Add extra info for the first member
+            member = group[0]
+            row.extend([
+                member.get(column_mapping.get('gender_identity'), ''),
+                member.get(column_mapping.get('sex'), ''),
+                member.get(column_mapping.get('residing_ph'), ''),
+                member.get(column_mapping.get('gender_preference'), ''),
+                member.get(column_mapping.get('country'), ''),
+                member.get(column_mapping.get('province'), ''),
+                member.get(column_mapping.get('city'), ''),
+                member.get(column_mapping.get('state'), '')
+            ])
+            
+            ws.append(row)
+            print(f"Added requested group {idx} with {len(group)} members")
+            
+            # Apply formatting
+            for i in range(5):
+                if i < len(group):
+                    member = group[i]
+                    gender_pref = member.get(column_mapping.get('gender_preference'), '')
+                    kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
+                    apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
+                    apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
     
     # Write solo groups
     print(f"Writing {len(solo_groups)} solo groups to Excel...")
@@ -740,14 +921,33 @@ def main():
     column_mapping = find_column_mapping(df)
     print(f"Column mapping: {column_mapping}")
     
+    # Debug: Check specific columns we're looking for
+    print("\nDebug: Checking specific columns:")
+    for key in ['accountability_buddies', 'has_accountability_buddies', 'email']:
+        if key in column_mapping and column_mapping[key]:
+            print(f"  {key}: Found as '{column_mapping[key]}'")
+        else:
+            print(f"  {key}: NOT FOUND")
+    
     # Convert DataFrame to list of dictionaries
     data = df.to_dict('records')
     
+    # Debug: Show first few rows to see actual data
+    print("\nDebug: First 3 rows of data:")
+    for i, row in enumerate(data[:3]):
+        print(f"  Row {i}:")
+        for key in ['user_id', 'accountability_buddies', 'has_accountability_buddies', 'email']:
+            if key in column_mapping and column_mapping[key]:
+                value = row.get(column_mapping[key], 'NOT_FOUND')
+                print(f"    {key} ({column_mapping[key]}): {value}")
+            else:
+                print(f"    {key}: Column not mapped")
+    
     # Group participants
-    solo_groups, grouped, excluded_users = group_participants(data, column_mapping)
+    solo_groups, grouped, excluded_users, requested_groups = group_participants(data, column_mapping)
     
     # Save to Excel
-    save_to_excel(solo_groups, grouped, OUTPUT_FILE, column_mapping, excluded_users)
+    save_to_excel(solo_groups, grouped, OUTPUT_FILE, column_mapping, excluded_users, requested_groups)
 
 if __name__ == "__main__":
     main() 

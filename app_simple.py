@@ -10,14 +10,14 @@ import json
 # Import the grouping logic from the existing script
 from group_assignment_to_excel import group_participants, save_to_excel, find_column_mapping
 
-def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_users=None):
+def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_users=None, requested_groups=None):
     """Create download buttons for Excel and CSV files"""
     col1, col2 = st.columns(2)
     
     with col1:
         # Create Excel file
         output_buffer = io.BytesIO()
-        save_to_excel(solo_groups, grouped, output_buffer, column_mapping, excluded_users)
+        save_to_excel(solo_groups, grouped, output_buffer, column_mapping, excluded_users, requested_groups)
         output_buffer.seek(0)
         
         st.download_button(
@@ -48,6 +48,19 @@ def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_
                     return participant.get(18, default) if isinstance(participant, (list, tuple)) else participant.get('city', default)
                 else:
                     return default
+        
+        # Add requested groups to CSV
+        if requested_groups:
+            for i, group in enumerate(requested_groups, 1):
+                for participant in group:
+                    csv_data.append({
+                        'Group': f'Requested Group {i}',
+                        'User ID': get_value(participant, 'user_id'),
+                        'Name': get_value(participant, 'name'),
+                        'Gender': get_value(participant, 'gender_identity'),
+                        'City': get_value(participant, 'city'),
+                        'Type': 'Requested'
+                    })
         
         for i, group in enumerate(solo_groups, 1):
             participant = group[0]
@@ -521,12 +534,13 @@ def show_grouping_page():
                     data_list = data.values.tolist()
                 
                 # Call the grouping function
-                solo_groups, grouped, excluded_users = group_participants(data_list, column_mapping)
+                solo_groups, grouped, excluded_users, requested_groups = group_participants(data_list, column_mapping)
                 
                 # Store results in session state
                 st.session_state.solo_groups = solo_groups
                 st.session_state.grouped = grouped
                 st.session_state.excluded_users = excluded_users
+                st.session_state.requested_groups = requested_groups
                 st.session_state.column_mapping = column_mapping
                 
                 # Display results
@@ -588,7 +602,7 @@ def show_grouping_page():
                 st.session_state.grouped = grouped
                 st.session_state.column_mapping = column_mapping
                 
-                create_download_buttons(solo_groups, grouped, column_mapping, excluded_users)
+                create_download_buttons(solo_groups, grouped, column_mapping, excluded_users, requested_groups)
             
             except Exception as e:
                 st.error(f"Error creating groups: {str(e)}")
