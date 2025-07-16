@@ -402,30 +402,125 @@ def group_participants(data, column_mapping):
         province_groups = defaultdict(list)
         for r in ph_rows:
             province = get_value(r, 'province', 'Unknown Province')
-            province_groups[province].append(r)
+            # Normalize province name
+            province_norm = province.strip().lower() if isinstance(province, str) else str(province).strip().lower()
+            province_groups[province_norm].append(r)
         
         print(f"  Philippines provinces found: {list(province_groups.keys())}")
         
-        for province, province_members in province_groups.items():
+        for province_norm, province_members in province_groups.items():
+            # Use the original province name from the first member for display
+            province = get_value(province_members[0], 'province', 'Unknown Province')
             print(f"    Province '{province}': {len(province_members)} participants")
             # Further group by city within each province
             city_groups = defaultdict(list)
             for r in province_members:
                 city = get_value(r, 'city', 'Unknown City')
-                city_groups[city].append(r)
+                # Normalize city name
+                city_norm = city.strip().lower() if isinstance(city, str) else str(city).strip().lower()
+                city_groups[city_norm].append(r)
             
-            print(f"      Cities in {province}: {list(city_groups.keys())}")
+            print(f"      Cities in {province}: {[get_value(city_groups[city][0], 'city', 'Unknown City') for city in city_groups.keys()]}")
             
-            for city, members in city_groups.items():
-                print(f"        City '{city}': {len(members)} participants")
-                # Split into chunks of 5
-                for i in range(0, len(members), 5):
-                    location_info = f"Province: {province}, City: {city}"
-                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = members[i:i+5]
-                    print(f"          Created Group {group_counter} with {len(members[i:i+5])} members")
+            # --- SORT CITIES ALPHABETICALLY ---
+            sorted_city_names = sorted(city_groups.keys())
+            print(f"      Cities sorted alphabetically: {sorted_city_names}")
+            
+            # --- NEW LOGIC: Prioritize same-city groups from entire province pool ---
+            # Collect all participants from this province
+            all_province_members = []
+            for city_norm in sorted_city_names:  # Use sorted city names
+                members = city_groups[city_norm]
+                all_province_members.extend(members)
+                print(f"        City '{city_norm}' (normalized): {len(members)} participants")
+            
+            print(f"        Total participants in {province}: {len(all_province_members)}")
+            
+            # Group by city within the province
+            city_members = defaultdict(list)
+            for member in all_province_members:
+                city = get_value(member, 'city', 'Unknown City')
+                city_norm = city.strip().lower() if isinstance(city, str) else str(city).strip().lower()
+                city_members[city_norm].append(member)
+            
+            # First, create complete groups (5 members) from each city
+            remaining_by_city = {}
+            for city_norm, members in city_members.items():
+                print(f"          Processing {city_norm}: {len(members)} participants")
+                
+                # Create complete groups of 5 from this city
+                i = 0
+                while i + 5 <= len(members):
+                    group_members = members[i:i+5]
+                    location_info = f"Province: {province}, City: {city_norm}"
+                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    print(f"            Created Group {group_counter} with {len(group_members)} members (same city)")
                     group_counter += 1
+                    i += 5
+                
+                # Keep remaining members from this city
+                if i < len(members):
+                    remaining_by_city[city_norm] = members[i:]
+                    print(f"            Remaining from {city_norm}: {len(members[i:])} members")
+            
+            # Now handle remaining members - prioritize same-city groups
+            if remaining_by_city:
+                print(f"        Processing remaining members from {province}")
+                
+                # First, try to form same-city groups from remaining members
+                for city_norm, members in list(remaining_by_city.items()):
+                    if len(members) >= 5:
+                        # Can form a complete group from this city
+                        group_members = members[:5]
+                        location_info = f"Province: {province}, City: {city_norm}"
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                        print(f"            Created Group {group_counter} with {len(group_members)} members (same city, from remaining)")
+                        group_counter += 1
+                        remaining_by_city[city_norm] = members[5:]
+                    elif len(members) == 0:
+                        del remaining_by_city[city_norm]
+                
+                # Collect all final remaining members (less than 5 per city)
+                final_remaining = []
+                for members in remaining_by_city.values():
+                    final_remaining.extend(members)
+                
+                # Create mixed-city groups from final remaining - keep city-units together
+                if final_remaining:
+                    print(f"        Creating mixed-city groups from {len(final_remaining)} final remaining members (city-units kept together)")
+                    # Group final remaining by city - use remaining_by_city directly
+                    final_by_city = []
+                    for city, members in remaining_by_city.items():
+                        if members:  # Only add non-empty city units
+                            final_by_city.append(members)
+                    
+                    print(f"        City units to combine: {[len(unit) for unit in final_by_city]}")
+                    
+                    # Greedily combine city-units into groups of up to 5, never splitting a city-unit
+                    i = 0
+                    while i < len(final_by_city):
+                        group = []
+                        while i < len(final_by_city) and len(group) + len(final_by_city[i]) <= 5:
+                            group.extend(final_by_city[i])
+                            i += 1
+                        if group:
+                            # Check if all from same city
+                            cities_in_group = set()
+                            for member in group:
+                                city = get_value(member, 'city', 'Unknown City')
+                                cities_in_group.add(city.strip().lower() if isinstance(city, str) else str(city).strip().lower())
+                            if len(cities_in_group) == 1:
+                                city_name = get_value(group[0], 'city', 'Unknown City')
+                                location_info = f"Province: {province}, City: {city_name}"
+                                print(f"            Created Group {group_counter} with {len(group)} members (same city, city-unit)")
+                            else:
+                                location_info = f"Province: {province} (mixed cities)"
+                                print(f"            Created Group {group_counter} with {len(group)} members (mixed cities, city-units)")
+                            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                            group_counter += 1
+            # --- END NEW LOGIC ---
         
-        # Group International participants by Country -> State hierarchy
+        # Group International participants by Country -> State hierarchy (unchanged)
         country_groups = defaultdict(list)
         for r in non_ph_rows:
             country = get_value(r, 'country', 'Unknown Country')
@@ -476,6 +571,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     if requested_groups:
         print(f"Writing {len(requested_groups)} requested groups to Excel...")
         for idx, group in enumerate(requested_groups, 1):
+            # --- SORT small group members ---
+            if len(group) < 5:
+                group = sorted(group, key=lambda m: (
+                    m.get(column_mapping.get('user_id'), ''),
+                    m.get(column_mapping.get('name'), ''),
+                    m.get(column_mapping.get('city'), '')
+                ))
             row = [f"Requested Group {idx}"]
             
             # Add user data for each member
@@ -520,6 +622,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     # Write solo groups
     print(f"Writing {len(solo_groups)} solo groups to Excel...")
     for idx, group in enumerate(solo_groups, 1):
+        # --- SORT small group members ---
+        if len(group) < 5:
+            group = sorted(group, key=lambda m: (
+                m.get(column_mapping.get('user_id'), ''),
+                m.get(column_mapping.get('name'), ''),
+                m.get(column_mapping.get('city'), '')
+            ))
         row = [f"Solo {idx}"]
         for i in range(5):
             if i < len(group):
@@ -561,6 +670,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     # Write grouped participants
     print(f"Writing {len(grouped)} regular groups to Excel...")
     for group_name, members in grouped.items():
+        # --- SORT small group members ---
+        if len(members) < 5:
+            members = sorted(members, key=lambda m: (
+                m.get(column_mapping.get('user_id'), ''),
+                m.get(column_mapping.get('name'), ''),
+                m.get(column_mapping.get('city'), '')
+            ))
         row = [group_name]
         for i in range(5):
             if i < len(members):
@@ -675,6 +791,17 @@ def main():
             print(f"  {key}: NOT FOUND")
     
     # Convert DataFrame to list of dictionaries
+    # --- SORTING STEP: Sort by province, city, gender_preference, gender_identity, user_id if columns exist ---
+    sort_columns = []
+    for col_key in ['province', 'city', 'gender_preference', 'gender_identity', 'user_id']:
+        col_name = column_mapping.get(col_key)
+        if col_name and col_name in df.columns:
+            sort_columns.append(col_name)
+    if sort_columns:
+        df = df.sort_values(by=sort_columns)
+        print(f"Sorted data by: {sort_columns}")
+    else:
+        print("No sort columns found; skipping sorting step.")
     data = df.to_dict('records')
     
     # Debug: Show first few rows to see actual data
