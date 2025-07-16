@@ -21,7 +21,8 @@ EXPECTED_COLUMNS = {
     'city': ['city', 'municipality'],
     'state': ['state', 'region', 'stat'],
     'go_solo': ['go_solo', 'solo', 'prefer_solo', 'goSolo'],
-    'joining_as_student': ['joining_as_student', 'joiningAsStudent', 'student', 'is_student']
+    'joining_as_student': ['joining_as_student', 'joiningAsStudent', 'student', 'is_student'],
+    'kaizen_client_type': ['kaizen_client_type', 'kaizenClientType', 'client_type', 'clientType']
 }
 
 # Helper for color coding
@@ -312,12 +313,23 @@ def merge_small_groups(groups_dict, max_group_size=5):
     final_groups = {**normal_groups, **merged_groups}
     return final_groups
 
-def apply_color_to_cell(cell, gender_identity, same_gender=None):
+def apply_color_to_cell(cell, gender_identity, same_gender=None, kaizen_client_type=None):
     gender_identity = str(gender_identity).lower()
     if gender_identity in GENDER_COLOR:
         cell.fill = PatternFill(start_color=GENDER_COLOR[gender_identity], end_color=GENDER_COLOR[gender_identity], fill_type="solid")
+    
+    # Apply font formatting
+    font_style = Font()
     if same_gender is not None and str(same_gender).lower() == "same_gender":
-        cell.font = Font(bold=True)
+        font_style = Font(bold=True)
+    
+    # Apply dark red color for team members
+    if kaizen_client_type is not None and str(kaizen_client_type).lower() == "team_member":
+        font_style = Font(color="8B0000")  # Dark red color
+        if same_gender is not None and str(same_gender).lower() == "same_gender":
+            font_style = Font(bold=True, color="8B0000")  # Bold and dark red
+    
+    cell.font = font_style
 
 def group_participants(data, column_mapping):
     solo_groups = []
@@ -360,6 +372,7 @@ def group_participants(data, column_mapping):
             return default
     
     # Filter out participants where joiningAsStudent is False (but keep NaN/missing values)
+    excluded_users = []  # Track excluded users to include them later
     if column_mapping and 'joining_as_student' in column_mapping:
         joining_col = column_mapping['joining_as_student']
         # Keep participants where joiningAsStudent is True or NaN/missing
@@ -371,6 +384,7 @@ def group_participants(data, column_mapping):
             joining_str = str(joining_value).strip().lower()
             if joining_str in ['false', '0', '0.0', 'no']:
                 excluded_count += 1
+                excluded_users.append(row)  # Add to excluded list
                 user_id = get_value(row, 'user_id', 'Unknown')
                 print(f"Excluded User {user_id}: joiningAsStudent = '{joining_value}'")
             else:
@@ -518,9 +532,10 @@ def group_participants(data, column_mapping):
     print(f"After merging: {len(grouped)} groups")
     
     print(f"Created {len(solo_groups)} solo groups and {len(grouped)} regular groups")
-    return solo_groups, grouped
+    print(f"Excluded {len(excluded_users)} users with joiningAsStudent=False")
+    return solo_groups, grouped, excluded_users
 
-def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping):
+def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "Grouped Members"
@@ -541,10 +556,26 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping):
         for i in range(5):
             if i < len(group):
                 member = group[i]
+                # Determine location display based on residing_ph
+                residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
+                if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                    # Philippines resident - show city
+                    location_display = member.get(column_mapping.get('city'), '')
+                else:
+                    # International resident - show "State, Country"
+                    state = member.get(column_mapping.get('state'), '')
+                    country = member.get(column_mapping.get('country'), '')
+                    if state and country:
+                        location_display = f"{state}, {country}"
+                    elif country:
+                        location_display = country
+                    else:
+                        location_display = member.get(column_mapping.get('city'), '')
+                
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
                     member.get(column_mapping.get('name'), ''),
-                    member.get(column_mapping.get('city'), '')
+                    location_display
                 ])
             else:
                 row.extend(["", "", ""])
@@ -566,10 +597,12 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping):
         for i in range(5):
             if i < len(group):
                 member = group[i]
+                gender_pref = member.get(column_mapping.get('gender_preference'), '')
+                kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
                 # User ID cell: col 2, 5, 8, 11, 14
                 apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
-                # Name cell: col 3, 6, 9, 12, 15
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''))
+                # Name cell: col 3, 6, 9, 12, 15 - apply bold if same_gender preference, dark red if team_member
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
     
     # Write grouped participants
     print(f"Writing {len(grouped)} regular groups to Excel...")
@@ -578,10 +611,26 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping):
         for i in range(5):
             if i < len(members):
                 member = members[i]
+                # Determine location display based on residing_ph
+                residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
+                if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                    # Philippines resident - show city
+                    location_display = member.get(column_mapping.get('city'), '')
+                else:
+                    # International resident - show "State, Country"
+                    state = member.get(column_mapping.get('state'), '')
+                    country = member.get(column_mapping.get('country'), '')
+                    if state and country:
+                        location_display = f"{state}, {country}"
+                    elif country:
+                        location_display = country
+                    else:
+                        location_display = member.get(column_mapping.get('city'), '')
+                
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
                     member.get(column_mapping.get('name'), ''),
-                    member.get(column_mapping.get('city'), '')
+                    location_display
                 ])
             else:
                 row.extend(["", "", ""])
@@ -602,8 +651,65 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping):
         for i in range(5):
             if i < len(members):
                 member = members[i]
+                gender_pref = member.get(column_mapping.get('gender_preference'), '')
+                kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
                 apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''))
+                # Apply bold to name if same_gender preference, dark red if team_member
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+    
+    # Write excluded users (joiningAsStudent=False)
+    if excluded_users:
+        print(f"Writing {len(excluded_users)} excluded users to Excel...")
+        for idx, user in enumerate(excluded_users, 1):
+            row = [f"Excluded {idx}"]
+            
+            # Add user data
+            # Determine location display based on residing_ph
+            residing_ph = str(user.get(column_mapping.get('residing_ph'), '0')).strip().lower()
+            if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                # Philippines resident - show city
+                location_display = user.get(column_mapping.get('city'), '')
+            else:
+                # International resident - show "State, Country"
+                state = user.get(column_mapping.get('state'), '')
+                country = user.get(column_mapping.get('country'), '')
+                if state and country:
+                    location_display = f"{state}, {country}"
+                elif country:
+                    location_display = country
+                else:
+                    location_display = user.get(column_mapping.get('city'), '')
+            
+            row.extend([
+                user.get(column_mapping.get('user_id'), ''),
+                user.get(column_mapping.get('name'), ''),
+                location_display
+            ])
+            
+            # Add empty cells for remaining slots
+            for i in range(4):  # 4 more slots (total 5)
+                row.extend(["", "", ""])
+            
+            # Add extra info
+            row.extend([
+                user.get(column_mapping.get('gender_identity'), ''),
+                user.get(column_mapping.get('sex'), ''),
+                user.get(column_mapping.get('residing_ph'), ''),
+                user.get(column_mapping.get('gender_preference'), ''),
+                user.get(column_mapping.get('country'), ''),
+                user.get(column_mapping.get('province'), ''),
+                user.get(column_mapping.get('city'), ''),
+                user.get(column_mapping.get('state'), '')
+            ])
+            
+            ws.append(row)
+            print(f"Added excluded user {idx} with user {user.get(column_mapping.get('user_id'), 'Unknown')}")
+            
+            # Apply formatting (treat as solo)
+            gender_pref = user.get(column_mapping.get('gender_preference'), '')
+            kaizen_client_type = user.get(column_mapping.get('kaizen_client_type'), '')
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=2), user.get(column_mapping.get('gender_identity'), ''))
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=3), user.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
     
     # Check if filename_or_buffer is a string (file path) or BytesIO buffer
     if isinstance(filename_or_buffer, str):
@@ -638,10 +744,10 @@ def main():
     data = df.to_dict('records')
     
     # Group participants
-    solo_groups, grouped = group_participants(data, column_mapping)
+    solo_groups, grouped, excluded_users = group_participants(data, column_mapping)
     
     # Save to Excel
-    save_to_excel(solo_groups, grouped, OUTPUT_FILE, column_mapping)
+    save_to_excel(solo_groups, grouped, OUTPUT_FILE, column_mapping, excluded_users)
 
 if __name__ == "__main__":
     main() 

@@ -10,14 +10,14 @@ import json
 # Import the grouping logic from the existing script
 from group_assignment_to_excel import group_participants, save_to_excel, find_column_mapping
 
-def create_download_buttons(solo_groups, grouped, column_mapping=None):
+def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_users=None):
     """Create download buttons for Excel and CSV files"""
     col1, col2 = st.columns(2)
     
     with col1:
         # Create Excel file
         output_buffer = io.BytesIO()
-        save_to_excel(solo_groups, grouped, output_buffer, column_mapping)
+        save_to_excel(solo_groups, grouped, output_buffer, column_mapping, excluded_users)
         output_buffer.seek(0)
         
         st.download_button(
@@ -69,6 +69,18 @@ def create_download_buttons(solo_groups, grouped, column_mapping=None):
                     'Gender': get_value(member, 'gender_identity'),
                     'City': get_value(member, 'city'),
                     'Type': 'Group'
+                })
+        
+        # Add excluded users to CSV
+        if excluded_users:
+            for user in excluded_users:
+                csv_data.append({
+                    'Group': 'Excluded',
+                    'User ID': get_value(user, 'user_id'),
+                    'Name': get_value(user, 'name'),
+                    'Gender': get_value(user, 'gender_identity'),
+                    'City': get_value(user, 'city'),
+                    'Type': 'Excluded'
                 })
         
         csv_df = pd.DataFrame(csv_data)
@@ -509,11 +521,12 @@ def show_grouping_page():
                     data_list = data.values.tolist()
                 
                 # Call the grouping function
-                solo_groups, grouped = group_participants(data_list, column_mapping)
+                solo_groups, grouped, excluded_users = group_participants(data_list, column_mapping)
                 
                 # Store results in session state
                 st.session_state.solo_groups = solo_groups
                 st.session_state.grouped = grouped
+                st.session_state.excluded_users = excluded_users
                 st.session_state.column_mapping = column_mapping
                 
                 # Display results
@@ -575,7 +588,7 @@ def show_grouping_page():
                 st.session_state.grouped = grouped
                 st.session_state.column_mapping = column_mapping
                 
-                create_download_buttons(solo_groups, grouped, column_mapping)
+                create_download_buttons(solo_groups, grouped, column_mapping, excluded_users)
             
             except Exception as e:
                 st.error(f"Error creating groups: {str(e)}")
@@ -1230,6 +1243,33 @@ def merge_and_download_excel(access_token):
         )
         
         st.success(f"✅ Successfully merged data! Result: {len(merged_df)} records")
+        
+        # Clean accountabilityBuddies field - replace None with blank string if no emails
+        if 'accountabilityBuddies' in merged_df.columns:
+            def clean_accountability_buddies(value):
+                if pd.isna(value) or value == 'None' or value == 'nan':
+                    return ''
+                
+                # If it's a string representation of a list/array, check if it contains emails
+                if isinstance(value, str):
+                    # Handle cases like [None, None], [None], {'1': None}
+                    if value == '[None, None]' or value == '[None]' or value == "{'1': None}":
+                        return ''
+                    
+                    # Remove brackets and quotes, split by comma
+                    cleaned = value.strip('[]').replace('"', '').replace("'", '')
+                    if cleaned == '' or cleaned == 'None':
+                        return ''
+                    
+                    # Check if it contains email-like strings (contains @ symbol)
+                    emails = [email.strip() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                    if not emails:
+                        return ''
+                    return value  # Keep original if it contains emails
+                return value
+            
+            merged_df['accountabilityBuddies'] = merged_df['accountabilityBuddies'].apply(clean_accountability_buddies)
+            st.info("🧹 Cleaned accountabilityBuddies field: replaced None/empty values with blank strings")
         
         # Show merged data info
         col1, col2, col3 = st.columns(3)
