@@ -111,6 +111,37 @@ TIMEZONE_REGIONS = {
     'est': ['Mexico']  # Eastern Standard Time (Mexico)
 }
 
+# GMT offset mapping for timezone labels
+GMT_OFFSETS = {
+    'pst_pdt': 'GMT-8',
+    'mst_mdt': 'GMT-7', 
+    'cst_cdt': 'GMT-6',
+    'est_edt': 'GMT-5',
+    'gmt_bst': 'GMT+0',
+    'cet_cest': 'GMT+1',
+    'eet_eest': 'GMT+2',
+    'msk': 'GMT+3',
+    'ist': 'GMT+5:30',
+    'pkt': 'GMT+5',
+    'bst': 'GMT+6',
+    'jst': 'GMT+9',
+    'cst': 'GMT+8',
+    'sgt': 'GMT+8',
+    'ict': 'GMT+7',
+    'wib': 'GMT+7',
+    'aest_aedt': 'GMT+10',
+    'nzst_nzdt': 'GMT+12',
+    'gst': 'GMT+4',
+    'ast': 'GMT+3',
+    'eat': 'GMT+3',
+    'wast_wat': 'GMT+1',
+    'sast': 'GMT+2',
+    'est': 'GMT+2',
+    'pst': 'GMT-8',
+    'cst': 'GMT-6',
+    'est': 'GMT-5'
+}
+
 def get_timezone_region(country, state=None):
     """Get timezone region for a country/state combination"""
     country = str(country).strip()
@@ -138,6 +169,15 @@ def get_timezone_region(country, state=None):
             return region
     
     return 'other'
+
+def get_timezone_label(timezone_region):
+    """Get timezone label with GMT offset"""
+    if timezone_region in GMT_OFFSETS:
+        return f"{timezone_region.upper()} ({GMT_OFFSETS[timezone_region]})"
+    elif timezone_region in SIMILAR_COUNTRIES:
+        return f"{timezone_region.replace('_', ' ').title()}"
+    else:
+        return timezone_region
 
 def find_column_mapping(df):
     """Dynamically find column mapping based on available columns"""
@@ -641,7 +681,8 @@ def group_participants(data, column_mapping):
                 i = 0
                 while i < len(members):
                     group_members = members[i:i+5]
-                    location_info = f"Timezone: {timezone_region}"
+                    timezone_label = get_timezone_label(timezone_region)
+                    location_info = f"Timezone: {timezone_label}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
                     print(f"            Created Group {group_counter} with {len(group_members)} members (timezone-based)")
                     group_counter += 1
