@@ -80,6 +80,65 @@ SIMILAR_COUNTRIES = {
     'oceania': ['Australia', 'New Zealand', 'Fiji', 'Papua New Guinea']
 }
 
+# Define timezone regions for international grouping
+TIMEZONE_REGIONS = {
+    'pst_pdt': ['United States', 'Canada'],  # Pacific Time
+    'mst_mdt': ['United States', 'Canada'],  # Mountain Time  
+    'cst_cdt': ['United States', 'Canada'],  # Central Time
+    'est_edt': ['United States', 'Canada'],  # Eastern Time
+    'gmt_bst': ['United Kingdom', 'Ireland', 'Portugal'],  # GMT/BST
+    'cet_cest': ['Germany', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Switzerland', 'Austria', 'Sweden', 'Norway', 'Denmark', 'Finland', 'Poland', 'Czech Republic', 'Hungary', 'Slovakia', 'Slovenia', 'Croatia', 'Serbia', 'Bosnia', 'Montenegro', 'North Macedonia', 'Albania', 'Kosovo', 'Bulgaria', 'Romania', 'Moldova', 'Ukraine', 'Belarus', 'Lithuania', 'Latvia', 'Estonia'],
+    'eet_eest': ['Greece', 'Cyprus', 'Bulgaria', 'Romania', 'Moldova', 'Ukraine', 'Belarus', 'Lithuania', 'Latvia', 'Estonia', 'Finland'],
+    'msk': ['Russia'],  # Moscow Time
+    'ist': ['India', 'Sri Lanka'],  # India Standard Time
+    'pkt': ['Pakistan'],  # Pakistan Time
+    'bst': ['Bangladesh'],  # Bangladesh Time
+    'jst': ['Japan', 'South Korea'],  # Japan Standard Time
+    'cst': ['China', 'Taiwan', 'Hong Kong', 'Macau'],  # China Standard Time
+    'sgt': ['Singapore', 'Malaysia', 'Brunei'],  # Singapore Time
+    'ict': ['Thailand', 'Vietnam', 'Cambodia', 'Laos'],  # Indochina Time
+    'wib': ['Indonesia'],  # Western Indonesian Time
+    'aest_aedt': ['Australia'],  # Australian Eastern Time
+    'nzst_nzdt': ['New Zealand'],  # New Zealand Time
+    'gst': ['UAE', 'Oman'],  # Gulf Standard Time
+    'ast': ['Saudi Arabia', 'Kuwait', 'Bahrain', 'Qatar'],  # Arabia Standard Time
+    'eat': ['Kenya', 'Ethiopia', 'Tanzania', 'Uganda', 'Rwanda', 'Burundi', 'Somalia', 'Djibouti', 'Eritrea'],  # East Africa Time
+    'wast_wat': ['Nigeria', 'Ghana', 'Cameroon', 'Chad', 'Central African Republic', 'Gabon', 'Congo', 'DR Congo', 'Angola'],  # West Africa Time
+    'sast': ['South Africa', 'Namibia', 'Botswana', 'Zimbabwe', 'Zambia', 'Malawi', 'Mozambique', 'Lesotho', 'Eswatini'],  # South Africa Time
+    'est': ['Egypt', 'Libya', 'Sudan', 'South Sudan'],  # Egypt Standard Time
+    'pst': ['Mexico'],  # Pacific Standard Time (Mexico)
+    'cst': ['Mexico'],  # Central Standard Time (Mexico)
+    'est': ['Mexico']  # Eastern Standard Time (Mexico)
+}
+
+def get_timezone_region(country, state=None):
+    """Get timezone region for a country/state combination"""
+    country = str(country).strip()
+    
+    # Special handling for US states with different timezones
+    if country.lower() == 'united states' and state:
+        state = str(state).strip().lower()
+        if state in ['california', 'washington', 'oregon', 'nevada', 'alaska']:
+            return 'pst_pdt'
+        elif state in ['colorado', 'utah', 'wyoming', 'montana', 'idaho', 'new mexico', 'arizona']:
+            return 'mst_mdt'
+        elif state in ['texas', 'oklahoma', 'kansas', 'nebraska', 'south dakota', 'north dakota', 'minnesota', 'iowa', 'missouri', 'arkansas', 'louisiana', 'mississippi', 'alabama', 'illinois', 'wisconsin', 'michigan', 'indiana', 'kentucky', 'tennessee']:
+            return 'cst_cdt'
+        elif state in ['new york', 'new jersey', 'pennsylvania', 'ohio', 'indiana', 'michigan', 'illinois', 'wisconsin', 'minnesota', 'iowa', 'missouri', 'arkansas', 'louisiana', 'mississippi', 'alabama', 'georgia', 'florida', 'south carolina', 'north carolina', 'virginia', 'west virginia', 'maryland', 'delaware', 'new hampshire', 'vermont', 'maine', 'massachusetts', 'rhode island', 'connecticut']:
+            return 'est_edt'
+    
+    # Check timezone regions
+    for timezone, countries in TIMEZONE_REGIONS.items():
+        if country in countries:
+            return timezone
+    
+    # Fallback to geographic regions
+    for region, countries in SIMILAR_COUNTRIES.items():
+        if country in countries:
+            return region
+    
+    return 'other'
+
 def find_column_mapping(df):
     """Dynamically find column mapping based on available columns"""
     mapping = {}
@@ -520,13 +579,16 @@ def group_participants(data, column_mapping):
                             group_counter += 1
             # --- END NEW LOGIC ---
         
-        # Group International participants by Country -> State hierarchy (unchanged)
+        # Group International participants by Country -> State hierarchy with timezone-based small group merging
         country_groups = defaultdict(list)
         for r in non_ph_rows:
             country = get_value(r, 'country', 'Unknown Country')
             country_groups[country].append(r)
         
         print(f"  International countries found: {list(country_groups.keys())}")
+        
+        # First pass: create complete groups (5 members) from each country/state
+        remaining_international = []
         
         for country, country_members in country_groups.items():
             print(f"    Country '{country}': {len(country_members)} participants")
@@ -540,11 +602,50 @@ def group_participants(data, column_mapping):
             
             for state, members in state_groups.items():
                 print(f"        State '{state}': {len(members)} participants")
-                for i in range(0, len(members), 5):
+                
+                # Create complete groups of 5 from this state
+                i = 0
+                while i + 5 <= len(members):
+                    group_members = members[i:i+5]
                     location_info = f"Country: {country}, State: {state}"
-                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = members[i:i+5]
-                    print(f"          Created Group {group_counter} with {len(members[i:i+5])} members")
+                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    print(f"          Created Group {group_counter} with {len(group_members)} members (complete group)")
                     group_counter += 1
+                    i += 5
+                
+                # Keep remaining members for timezone-based grouping
+                if i < len(members):
+                    remaining_members = members[i:]
+                    remaining_international.extend(remaining_members)
+                    print(f"          Remaining from {state}: {len(remaining_members)} members")
+        
+        # Second pass: combine remaining members by timezone regions
+        if remaining_international:
+            print(f"        Processing {len(remaining_international)} remaining international members by timezone")
+            
+            # Group remaining members by timezone region
+            timezone_groups = defaultdict(list)
+            for member in remaining_international:
+                country = get_value(member, 'country', 'Unknown Country')
+                state = get_value(member, 'state', 'Unknown State')
+                timezone_region = get_timezone_region(country, state)
+                timezone_groups[timezone_region].append(member)
+            
+            print(f"        Timezone regions found: {list(timezone_groups.keys())}")
+            
+            # Process each timezone region
+            for timezone_region, members in timezone_groups.items():
+                print(f"          Timezone '{timezone_region}': {len(members)} participants")
+                
+                # Create groups of up to 5 from this timezone region
+                i = 0
+                while i < len(members):
+                    group_members = members[i:i+5]
+                    location_info = f"Timezone: {timezone_region}"
+                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    print(f"            Created Group {group_counter} with {len(group_members)} members (timezone-based)")
+                    group_counter += 1
+                    i += 5
     
     # No merging of small groups - keep all groups as created
     print(f"Created {len(grouped)} regular groups (no merging)")
