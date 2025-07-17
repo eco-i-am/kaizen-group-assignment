@@ -916,6 +916,8 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         "User ID 3", "Name 3", "City 3",
         "User ID 4", "Name 4", "City 4",
         "User ID 5", "Name 5", "City 5",
+        "User ID 6", "Name 6", "City 6",
+        "User ID 7", "Name 7", "City 7",
         "Gender Identity", "Sex", "Residing in PH", "Gender Preference", "Country", "Province", "City", "State",
         "Temporary Team Name", "Previous Coach Name"
     ])
@@ -929,7 +931,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         group_row_indices = []
         for idx, group in enumerate(sorted_requested_groups, 1):
             # --- SORT small group members ---
-            if len(group) < 5:
+            if len(group) < 7:
                 group = sorted(group, key=lambda m: (
                     m.get(column_mapping.get('user_id'), ''),
                     m.get(column_mapping.get('name'), ''),
@@ -958,26 +960,16 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 # This is an accountability buddy group
                 row = [f"Requested Group {idx} ({len(group)} members)"]
             
-            # Add user data for each member
-            for i in range(5):
+            # Add user data for each member (up to 7)
+            for i in range(7):
                 if i < len(group):
                     member = group[i]
                     location_display = format_location_display(member, column_mapping)
-                    
-                    # If this is the 5th member and there's a 6th member, concatenate their info
-                    if i == 4 and len(group) > 5:
-                        member6 = group[5]
-                        location_display6 = format_location_display(member6, column_mapping)
-                        user_id_combined = f"{member.get(column_mapping.get('user_id'), '')} / {member6.get(column_mapping.get('user_id'), '')}"
-                        name_combined = f"{member.get(column_mapping.get('name'), '')} / {member6.get(column_mapping.get('name'), '')}"
-                        location_combined = f"{location_display} / {location_display6}"
-                        row.extend([user_id_combined, name_combined, location_combined])
-                    else:
-                        row.extend([
-                            member.get(column_mapping.get('user_id'), ''),
-                            member.get(column_mapping.get('name'), ''),
-                            location_display
-                        ])
+                    row.extend([
+                        member.get(column_mapping.get('user_id'), ''),
+                        member.get(column_mapping.get('name'), ''),
+                        location_display
+                    ])
                 else:
                     row.extend(["", "", ""])
             
@@ -1022,48 +1014,15 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             print(f"Added requested group {idx} with {len(group)} members")
             
             # Apply formatting
-            for i in range(5):
+            for i in range(7):
                 if i < len(group):
                     member = group[i]
                     gender_pref = member.get(column_mapping.get('gender_preference'), '')
                     kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
-                    
-                    # If this is the 5th member and there's a 6th member, apply combined formatting
-                    if i == 4 and len(group) > 5:
-                        member6 = group[5]
-                        gender_pref6 = member6.get(column_mapping.get('gender_preference'), '')
-                        kaizen_client_type6 = member6.get(column_mapping.get('kaizen_client_type'), '')
-                        
-                        # For the combined cells (5th and 6th member), we need to apply formatting that considers both members
-                        # Apply gender-based background color for the 5th member (primary)
-                        apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
-                        
-                        # For the name cell, apply formatting based on both members' criteria
-                        name_cell = ws.cell(row=ws.max_row, column=3 + i*3)
-                        
-                        # Check if either member has same_gender preference or is team_member
-                        has_same_gender = (str(gender_pref).lower() == 'same_gender' or 
-                                         str(gender_pref6).lower() == 'same_gender')
-                        is_team_member = (str(kaizen_client_type).lower() == 'team_member' or 
-                                        str(kaizen_client_type6).lower() == 'team_member')
-                        
-                        # Apply combined formatting
-                        if is_team_member:
-                            if has_same_gender:
-                                name_cell.font = Font(bold=True, color="8B0000")  # Bold and dark red
-                            else:
-                                name_cell.font = Font(color="8B0000")  # Dark red only
-                        elif has_same_gender:
-                            name_cell.font = Font(bold=True)  # Bold only
-                        else:
-                            name_cell.font = Font()  # Default font
-                        
-                        # Apply gender-based background color (use 5th member's gender as primary)
-                        apply_color_to_cell(name_cell, member.get(column_mapping.get('gender_identity'), ''))
         
-        # After all requested groups are written, apply green highlight to group name cell if group has 5 members
+        # After all requested groups are written, apply green highlight to group name cell if group has 5 or more members
         for row_idx, group_size in group_row_indices:
             if group_size >= 5:
                 ws.cell(row=row_idx, column=1).fill = green_fill
@@ -1072,18 +1031,17 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     print(f"Writing {len(solo_groups)} solo groups to Excel...")
     for idx, group in enumerate(solo_groups, 1):
         # --- SORT small group members ---
-        if len(group) < 5:
+        if len(group) < 7:
             group = sorted(group, key=lambda m: (
                 m.get(column_mapping.get('user_id'), ''),
                 m.get(column_mapping.get('name'), ''),
                 m.get(column_mapping.get('city'), '')
             ))
         row = [f"Solo {idx}"]
-        for i in range(5):
+        for i in range(7):
             if i < len(group):
                 member = group[i]
                 location_display = format_location_display(member, column_mapping)
-                
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
                     member.get(column_mapping.get('name'), ''),
@@ -1108,34 +1066,31 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         ws.append(row)
         print(f"Added solo group {idx} with user {member.get(column_mapping.get('user_id'), 'Unknown')}")
         # Color code user_id and name cells for each member
-        for i in range(5):
+        for i in range(7):
             if i < len(group):
                 member = group[i]
                 gender_pref = member.get(column_mapping.get('gender_preference'), '')
                 kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
-                # User ID cell: col 2, 5, 8, 11, 14
                 apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
-                # Name cell: col 3, 6, 9, 12, 15 - apply bold if same_gender preference, dark red if team_member
                 apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
     
     # Write grouped participants
     print(f"Writing {len(grouped)} regular groups to Excel...")
-    # Track regular groups with 5 members for highlighting
+    # Track regular groups with 5 or more members for highlighting
     regular_group_row_indices = []
     for group_name, members in grouped.items():
         # --- SORT small group members ---
-        if len(members) < 5:
+        if len(members) < 7:
             members = sorted(members, key=lambda m: (
                 m.get(column_mapping.get('user_id'), ''),
                 m.get(column_mapping.get('name'), ''),
                 m.get(column_mapping.get('city'), '')
             ))
         row = [group_name]
-        for i in range(5):
+        for i in range(7):
             if i < len(members):
                 member = members[i]
                 location_display = format_location_display(member, column_mapping)
-                
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
                     member.get(column_mapping.get('name'), ''),
@@ -1159,9 +1114,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         ])
         ws.append(row)
         
-        # Check if group has exactly 5 members and all members have the same location
+        # Check if group has 5 or more members and all members have the same location
         should_highlight = False
-        if len(members) == 5:
+        if len(members) >= 5:
             # Check if all members have the same location
             first_member = members[0]
             first_residing_ph = str(first_member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
@@ -1171,7 +1126,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 first_city = str(first_member.get(column_mapping.get('city'), '')).strip()
                 all_same_location = all(
                     str(member.get(column_mapping.get('city'), '')).strip() == first_city 
-                    for member in members
+                    for member in members[:7]
                 )
             else:
                 # International residents - check if all have same state and country
@@ -1180,14 +1135,14 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 all_same_location = all(
                     str(member.get(column_mapping.get('state'), '')).strip() == first_state and
                     str(member.get(column_mapping.get('country'), '')).strip() == first_country
-                    for member in members
+                    for member in members[:7]
                 )
             
             if all_same_location:
                 regular_group_row_indices.append(ws.max_row)
         
         # Color code user_id and name cells for each member
-        for i in range(5):
+        for i in range(7):
             if i < len(members):
                 member = members[i]
                 gender_pref = member.get(column_mapping.get('gender_preference'), '')
@@ -1196,9 +1151,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 # Apply bold to name if same_gender preference, dark red if team_member
                 apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
     
-    # Apply highlighting to regular groups with exactly 5 members and same location
+    # Apply highlighting to regular groups with 5 or more members and same location
     if regular_group_row_indices:
-        # Use a different color for regular groups with 5 members and same location (light blue)
+        # Use a different color for regular groups with 5 or more members and same location (light blue)
         regular_group_fill = PatternFill(start_color="87CEEB", end_color="87CEEB", fill_type="solid")
         for row_idx in regular_group_row_indices:
             ws.cell(row=row_idx, column=1).fill = regular_group_fill
@@ -1218,8 +1173,8 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 location_display
             ])
             
-            # Add empty cells for remaining slots
-            for i in range(4):  # 4 more slots (total 5)
+            # Add empty cells for remaining slots (to fill up to 7 members)
+            for i in range(6):  # 6 more slots (total 7)
                 row.extend(["", "", ""])
             
             # Add extra info
