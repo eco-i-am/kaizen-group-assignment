@@ -801,7 +801,11 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     # Write requested groups (accountability buddies)
     if requested_groups:
         print(f"Writing {len(requested_groups)} requested groups to Excel...")
-        for idx, group in enumerate(requested_groups, 1):
+        # Sort requested groups by descending order of number of users
+        sorted_requested_groups = sorted(requested_groups, key=lambda g: len(g), reverse=True)
+        green_fill = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
+        group_row_indices = []
+        for idx, group in enumerate(sorted_requested_groups, 1):
             # --- SORT small group members ---
             if len(group) < 5:
                 group = sorted(group, key=lambda m: (
@@ -809,7 +813,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     m.get(column_mapping.get('name'), ''),
                     m.get(column_mapping.get('city'), '')
                 ))
-            row = [f"Requested Group {idx}"]
+            row = [f"Requested Group {idx} ({len(group)} members)"]
             
             # Add user data for each member
             for i in range(5):
@@ -839,6 +843,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             ])
             
             ws.append(row)
+            group_row_indices.append((ws.max_row, len(group)))
             print(f"Added requested group {idx} with {len(group)} members")
             
             # Apply formatting
@@ -849,6 +854,11 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+        
+        # After all requested groups are written, apply green highlight to group name cell if group has 5re members
+        for row_idx, group_size in group_row_indices:
+            if group_size >= 5:
+                ws.cell(row=row_idx, column=1).fill = green_fill
     
     # Write solo groups
     print(f"Writing {len(solo_groups)} solo groups to Excel...")
