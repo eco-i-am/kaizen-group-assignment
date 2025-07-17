@@ -83,6 +83,54 @@ SIMILAR_COUNTRIES = {
     'oceania': ['Australia', 'New Zealand', 'Fiji', 'Papua New Guinea']
 }
 
+# Define Philippines regions and their provinces
+PHILIPPINES_REGIONS = {
+    'luzon': [
+        'Metro Manila', 'Manila', 'Quezon City', 'Caloocan', 'Las Piñas', 'Makati', 'Malabon', 'Mandaluyong', 'Marikina', 'Muntinlupa', 'Navotas', 'Parañaque', 'Pasay', 'Pasig', 'San Juan', 'Taguig', 'Valenzuela', 'Pateros',
+        'Bataan', 'Bulacan', 'Nueva Ecija', 'Pampanga', 'Tarlac', 'Zambales', 'Aurora',
+        'Batangas', 'Cavite', 'Laguna', 'Quezon', 'Rizal',
+        'Albay', 'Camarines Norte', 'Camarines Sur', 'Catanduanes', 'Masbate', 'Sorsogon',
+        'Abra', 'Apayao', 'Benguet', 'Ifugao', 'Kalinga', 'Mountain Province',
+        'Ilocos Norte', 'Ilocos Sur', 'La Union', 'Pangasinan',
+        'Batanes', 'Cagayan', 'Isabela', 'Nueva Vizcaya', 'Quirino'
+    ],
+    'visayas': [
+        'Aklan', 'Antique', 'Capiz', 'Iloilo', 'Guimaras', 'Negros Occidental',
+        'Bohol', 'Cebu', 'Negros Oriental', 'Siquijor',
+        'Biliran', 'Eastern Samar', 'Leyte', 'Northern Samar', 'Samar', 'Southern Leyte'
+    ],
+    'mindanao': [
+        'Bukidnon', 'Camiguin', 'Lanao del Norte', 'Misamis Occidental', 'Misamis Oriental',
+        'Davao del Norte', 'Davao del Sur', 'Davao Occidental', 'Davao Oriental', 'Davao de Oro',
+        'Cotabato', 'Sarangani', 'South Cotabato', 'Sultan Kudarat',
+        'Agusan del Norte', 'Agusan del Sur', 'Dinagat Islands', 'Surigao del Norte', 'Surigao del Sur',
+        'Basilan', 'Lanao del Sur', 'Maguindanao', 'Sulu', 'Tawi-Tawi',
+        'Zamboanga del Norte', 'Zamboanga del Sur', 'Zamboanga Sibugay'
+    ]
+}
+
+def get_philippines_region(province):
+    """Get the Philippines region for a given province"""
+    if not province:
+        return 'unknown'
+    
+    province_lower = str(province).strip().lower()
+    
+    for region, provinces in PHILIPPINES_REGIONS.items():
+        for region_province in provinces:
+            if province_lower == region_province.lower():
+                return region
+    
+    # If not found in the mapping, try to guess based on common patterns
+    if any(keyword in province_lower for keyword in ['manila', 'quezon', 'caloocan', 'makati', 'pasig', 'taguig', 'marikina', 'mandaluyong', 'las piñas', 'parañaque', 'muntinlupa', 'valenzuela', 'malabon', 'navotas', 'san juan', 'pasay', 'pateros']):
+        return 'luzon'
+    elif any(keyword in province_lower for keyword in ['cebu', 'iloilo', 'bohol', 'negros', 'samar', 'leyte', 'aklan', 'antique', 'capiz', 'guimaras', 'siquijor', 'biliran']):
+        return 'visayas'
+    elif any(keyword in province_lower for keyword in ['davao', 'cotabato', 'zamboanga', 'bukidnon', 'misamis', 'agusan', 'surigao', 'lanao', 'maguindanao', 'sulu', 'tawi-tawi', 'basilan']):
+        return 'mindanao'
+    
+    return 'unknown'
+
 # Define timezone regions for international grouping
 TIMEZONE_REGIONS = {
     'pst_pdt': ['United States', 'Canada'],  # Pacific Time
@@ -709,9 +757,29 @@ def group_participants(data, column_mapping):
         
         print(f"  Philippines provinces found: {list(province_groups.keys())}")
         
+        # Sort provinces by Philippines regions (Luzon, Visayas, Mindanao)
+        sorted_provinces = []
         for province_norm, province_members in province_groups.items():
-            # Use the original province name from the first member for display
-            province = get_value(province_members[0], 'province', 'Unknown Province')
+            # Get the original province name from the first member for sorting
+            original_province = get_value(province_members[0], 'province', 'Unknown Province')
+            region = get_philippines_region(original_province)
+            sorted_provinces.append((original_province, province_norm, province_members, region))
+        
+        # Sort by region first (Luzon, Visayas, Mindanao), then by province name within each region
+        region_order = {'luzon': 1, 'visayas': 2, 'mindanao': 3, 'unknown': 4}
+        sorted_provinces.sort(key=lambda x: (region_order.get(x[3], 5), x[0].lower()))
+        
+        print(f"  Philippines provinces sorted by region:")
+        current_region = None
+        for prov in sorted_provinces:
+            if prov[3] != current_region:
+                current_region = prov[3]
+                print(f"    {current_region.upper()}:")
+            print(f"      - {prov[0]}")
+        
+        for original_province, province_norm, province_members, region in sorted_provinces:
+            # Use the original province name for display
+            province = original_province
             print(f"    Province '{province}': {len(province_members)} participants")
             # Further group by city within each province
             city_groups = defaultdict(list)
