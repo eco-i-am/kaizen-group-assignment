@@ -2,6 +2,7 @@ import pandas as pd
 from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font
+import re
 
 # File paths - Updated to use merged Excel file
 INPUT_FILE = 'sample_merged_data.xlsx'  # Change this to your merged file
@@ -75,7 +76,7 @@ SIMILAR_COUNTRIES = {
     'south_asia': ['India', 'Pakistan', 'Bangladesh', 'Sri Lanka', 'Nepal', 'Bhutan', 'Maldives'],
     'north_america': ['United States', 'Canada', 'Mexico'],
     'europe': ['United Kingdom', 'Germany', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Switzerland', 'Austria', 'Sweden', 'Norway', 'Denmark', 'Finland'],
-    'middle_east': ['Saudi Arabia', 'UAE', 'Qatar', 'Kuwait', 'Bahrain', 'Oman', 'Jordan', 'Lebanon', 'Israel', 'Turkey'],
+    'middle_east': ['Saudi Arabia', 'United Arab Emirates', 'Qatar', 'Kuwait', 'Bahrain', 'Oman', 'Jordan', 'Lebanon', 'Israel', 'Turkey'],
     'africa': ['South Africa', 'Nigeria', 'Kenya', 'Egypt', 'Morocco', 'Ghana', 'Ethiopia'],
     'oceania': ['Australia', 'New Zealand', 'Fiji', 'Papua New Guinea']
 }
@@ -83,10 +84,10 @@ SIMILAR_COUNTRIES = {
 # Define timezone regions for international grouping
 TIMEZONE_REGIONS = {
     'pst_pdt': ['United States', 'Canada'],  # Pacific Time
-    'mst_mdt': ['United States', 'Canada'],  # Mountain Time  
+    'mst_mdt': ['United States', 'Canada'],  # Mountain Time
     'cst_cdt': ['United States', 'Canada'],  # Central Time
     'est_edt': ['United States', 'Canada'],  # Eastern Time
-    'gmt_bst': ['United Kingdom', 'Ireland', 'Portugal'],  # GMT/BST
+    'gmt_bst': ['United Kingdom', 'Ireland', 'Portugal','Isle of Man'],  # GMT/BST
     'cet_cest': ['Germany', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Switzerland', 'Austria', 'Sweden', 'Norway', 'Denmark', 'Finland', 'Poland', 'Czech Republic', 'Hungary', 'Slovakia', 'Slovenia', 'Croatia', 'Serbia', 'Bosnia', 'Montenegro', 'North Macedonia', 'Albania', 'Kosovo', 'Bulgaria', 'Romania', 'Moldova', 'Ukraine', 'Belarus', 'Lithuania', 'Latvia', 'Estonia'],
     'eet_eest': ['Greece', 'Cyprus', 'Bulgaria', 'Romania', 'Moldova', 'Ukraine', 'Belarus', 'Lithuania', 'Latvia', 'Estonia', 'Finland'],
     'msk': ['Russia'],  # Moscow Time
@@ -100,7 +101,7 @@ TIMEZONE_REGIONS = {
     'wib': ['Indonesia'],  # Western Indonesian Time
     'aest_aedt': ['Australia'],  # Australian Eastern Time
     'nzst_nzdt': ['New Zealand'],  # New Zealand Time
-    'gst': ['UAE', 'Oman'],  # Gulf Standard Time
+    'gst': ['United Arab Emirates', 'Oman'],  # Gulf Standard Time
     'ast': ['Saudi Arabia', 'Kuwait', 'Bahrain', 'Qatar'],  # Arabia Standard Time
     'eat': ['Kenya', 'Ethiopia', 'Tanzania', 'Uganda', 'Rwanda', 'Burundi', 'Somalia', 'Djibouti', 'Eritrea'],  # East Africa Time
     'wast_wat': ['Nigeria', 'Ghana', 'Cameroon', 'Chad', 'Central African Republic', 'Gabon', 'Congo', 'DR Congo', 'Angola'],  # West Africa Time
@@ -108,7 +109,18 @@ TIMEZONE_REGIONS = {
     'est': ['Egypt', 'Libya', 'Sudan', 'South Sudan'],  # Egypt Standard Time
     'pst': ['Mexico'],  # Pacific Standard Time (Mexico)
     'cst': ['Mexico'],  # Central Standard Time (Mexico)
-    'est': ['Mexico']  # Eastern Standard Time (Mexico)
+    'est': ['Mexico'],  # Eastern Standard Time (Mexico)
+    'cayman_est': ['Cayman Islands'],
+    'bermuda_ast': ['Bermuda'],
+    # Geographic regions
+    'southeast_asia': 'GMT+7',
+    'east_asia': 'GMT+8',
+    'south_asia': 'GMT+5',   
+    'north_america': 'GMT-5', 
+    'europe': 'GMT+1',
+    'middle_east': 'GMT+3', 
+    'africa': 'GMT+2',
+    'oceania': 'GMT+10'
 }
 
 # GMT offset mapping for timezone labels
@@ -139,15 +151,82 @@ GMT_OFFSETS = {
     'est': 'GMT+2',
     'pst': 'GMT-8',
     'cst': 'GMT-6',
-    'est': 'GMT-5'
+    'est': 'GMT-5',
+    'cayman_est': 'GMT-5',
+    'bermuda_ast': 'GMT-4',
+    # Geographic regions
+    'southeast_asia': 'GMT+7',
+    'east_asia': 'GMT+8',
+    'south_asia': 'GMT+5',   
+    'north_america': 'GMT-5', 
+    'europe': 'GMT+1',
+    'middle_east': 'GMT+3', 
+    'africa': 'GMT+2',
+    'oceania': 'GMT+10'
 }
 
+def get_gmt_offset_value(timezone_region):
+    """Get GMT offset as a numeric value for sorting (negative for behind GMT, positive for ahead)"""
+    if timezone_region in GMT_OFFSETS:
+        offset_str = GMT_OFFSETS[timezone_region]
+        # Extract numeric value from GMT+X or GMT-X or GMT+X:Y
+        if 'GMT+' in offset_str:
+            # Handle half-hour offsets like GMT+5:30
+            parts = offset_str.replace('GMT+', '').split(':')
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 else 0
+            return hours + (minutes / 60.0)
+        else:
+            # Handle whole hour offsets
+            return int(offset_str.replace('GMT+', '').replace('GMT-', '-'))
+    return 0  # Default for unknown timezones
+
+def normalize_country_name(country):
+    if not country:
+        return ''
+    country = str(country).strip().lower().replace('.', '')
+    country = re.sub(r'\s+', ' ', country)  # collapse multiple spaces
+    return country
+
+def extract_country_from_field(field_value):
+    if not field_value:
+        return field_value
+    field_str = str(field_value).strip()
+    if field_str.lower() in ['nan', 'none', '[]']:
+        return field_str
+    if ',' in field_str:
+        parts = [part.strip() for part in field_str.split(',')]
+        return parts[-1]
+    # Handle abbreviations and variations
+    country_mappings = {
+        'uae': 'united arab emirates',
+        'u a e': 'united arab emirates',
+        'u.a.e.': 'united arab emirates',
+        'united arab emirates': 'united arab emirates',
+        'usa': 'united states',
+        'us': 'united states',
+        'u s a': 'united states',
+        'u.s.a.': 'united states',
+        'uk': 'united kingdom',
+        'u k': 'united kingdom',
+        'u.k.': 'united kingdom',
+        'north ame': 'united states',
+        'north america': 'united states',
+        'bermuda': 'bermuda',
+        'cayman islands': 'cayman islands',
+    }
+    norm = normalize_country_name(field_str)
+    if norm in country_mappings:
+        return country_mappings[norm]
+    return field_str
+
 def get_timezone_region(country, state=None):
-    """Get timezone region for a country/state combination"""
-    country = str(country).strip()
-    
+    original_country = country
+    country = extract_country_from_field(country)
+    norm_country = normalize_country_name(country)
+    print(f"DEBUG: get_timezone_region - Original: {original_country} -> Extracted: '{country}' -> Normalized: '{norm_country}'")
     # Special handling for US states with different timezones
-    if country.lower() == 'united states' and state:
+    if norm_country == 'united states' and state:
         state = str(state).strip().lower()
         if state in ['california', 'washington', 'oregon', 'nevada', 'alaska']:
             return 'pst_pdt'
@@ -157,23 +236,25 @@ def get_timezone_region(country, state=None):
             return 'cst_cdt'
         elif state in ['new york', 'new jersey', 'pennsylvania', 'ohio', 'indiana', 'michigan', 'illinois', 'wisconsin', 'minnesota', 'iowa', 'missouri', 'arkansas', 'louisiana', 'mississippi', 'alabama', 'georgia', 'florida', 'south carolina', 'north carolina', 'virginia', 'west virginia', 'maryland', 'delaware', 'new hampshire', 'vermont', 'maine', 'massachusetts', 'rhode island', 'connecticut']:
             return 'est_edt'
-    
-    # Check timezone regions
+    # Check timezone regions with case-insensitive matching
     for timezone, countries in TIMEZONE_REGIONS.items():
-        if country in countries:
-            return timezone
-    
-    # Fallback to geographic regions
+        for mapped_country in countries:
+            if norm_country == normalize_country_name(mapped_country):
+                print(f"DEBUG: Found timezone match - {norm_country} -> {timezone}")
+                return timezone
+    # Fallback to geographic regions with case-insensitive matching
     for region, countries in SIMILAR_COUNTRIES.items():
-        if country in countries:
-            return region
-    
+        for mapped_country in countries:
+            if norm_country == normalize_country_name(mapped_country):
+                print(f"DEBUG: Found geographic match - {norm_country} -> {region}")
+                return region
+    print(f"DEBUG: No match found for country '{norm_country}' - returning 'other'")
     return 'other'
 
 def get_timezone_label(timezone_region):
-    """Get timezone label with GMT offset"""
+    """Get timezone label with GMT offset first"""
     if timezone_region in GMT_OFFSETS:
-        return f"{timezone_region.upper()} ({GMT_OFFSETS[timezone_region]})"
+        return f"{GMT_OFFSETS[timezone_region]} => {timezone_region.upper()}"
     elif timezone_region in SIMILAR_COUNTRIES:
         return f"{timezone_region.replace('_', ' ').title()}"
     else:
@@ -663,6 +744,9 @@ def group_participants(data, column_mapping):
         if remaining_international:
             print(f"        Processing {len(remaining_international)} remaining international members by timezone")
             
+            # Sort remaining international members by GMT offset
+            remaining_international.sort(key=lambda m: get_gmt_offset_value(get_timezone_region(get_value(m, 'country', 'Unknown Country'), get_value(m, 'state', 'Unknown State'))))
+            
             # Group remaining members by timezone region
             timezone_groups = defaultdict(list)
             for member in remaining_international:
@@ -673,9 +757,14 @@ def group_participants(data, column_mapping):
             
             print(f"        Timezone regions found: {list(timezone_groups.keys())}")
             
+            # Sort timezone regions by GMT offset before processing
+            sorted_timezone_regions = sorted(timezone_groups.keys(), key=get_gmt_offset_value)
+            print(f"        Timezone regions sorted by GMT: {sorted_timezone_regions}")
+            
             # Process each timezone region
-            for timezone_region, members in timezone_groups.items():
-                print(f"          Timezone '{timezone_region}': {len(members)} participants")
+            for timezone_region in sorted_timezone_regions:
+                members = timezone_groups[timezone_region]
+                print(f"          Timezone {timezone_region}': {len(members)} participants")
                 
                 # Create groups of up to 5 from this timezone region
                 i = 0
