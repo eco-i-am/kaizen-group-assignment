@@ -927,6 +927,8 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     
     # Write grouped participants
     print(f"Writing {len(grouped)} regular groups to Excel...")
+    # Track regular groups with 5 members for highlighting
+    regular_group_row_indices = []
     for group_name, members in grouped.items():
         # --- SORT small group members ---
         if len(members) < 5:
@@ -961,6 +963,34 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             member.get(column_mapping.get('state'), '')
         ])
         ws.append(row)
+        
+        # Check if group has exactly 5 members and all members have the same location
+        should_highlight = False
+        if len(members) == 5:
+            # Check if all members have the same location
+            first_member = members[0]
+            first_residing_ph = str(first_member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
+            
+            if first_residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                # Philippines residents - check if all have same city
+                first_city = str(first_member.get(column_mapping.get('city'), '')).strip()
+                all_same_location = all(
+                    str(member.get(column_mapping.get('city'), '')).strip() == first_city 
+                    for member in members
+                )
+            else:
+                # International residents - check if all have same state and country
+                first_state = str(first_member.get(column_mapping.get('state'), '')).strip()
+                first_country = str(first_member.get(column_mapping.get('country'), '')).strip()
+                all_same_location = all(
+                    str(member.get(column_mapping.get('state'), '')).strip() == first_state and
+                    str(member.get(column_mapping.get('country'), '')).strip() == first_country
+                    for member in members
+                )
+            
+            if all_same_location:
+                regular_group_row_indices.append(ws.max_row)
+        
         # Color code user_id and name cells for each member
         for i in range(5):
             if i < len(members):
@@ -970,6 +1000,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
                 # Apply bold to name if same_gender preference, dark red if team_member
                 apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+    
+    # Apply highlighting to regular groups with exactly 5 members and same location
+    if regular_group_row_indices:
+        # Use a different color for regular groups with 5 members and same location (light blue)
+        regular_group_fill = PatternFill(start_color="87CEEB", end_color="87CEEB", fill_type="solid")
+        for row_idx in regular_group_row_indices:
+            ws.cell(row=row_idx, column=1).fill = regular_group_fill
     
     # Write excluded users (joiningAsStudent=False)
     if excluded_users:
