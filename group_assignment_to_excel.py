@@ -403,6 +403,29 @@ def group_participants(data, column_mapping):
     
     print(f"Found {len(accountability_participants)} participants with accountability buddies")
     
+    # Second pass: collect participants with temporary team names (even without accountability buddies)
+    team_name_participants = []
+    for row in data:
+        temporary_team_name = get_value(row, 'temporary_team_name', '')
+        user_id = get_value(row, 'user_id', 'Unknown')
+        
+        # Check if user has a valid temporary team name
+        has_team_name = temporary_team_name and str(temporary_team_name).strip() not in ['', 'None', 'nan']
+        
+        if has_team_name:
+            # Check if this user is not already in accountability_participants
+            user_email = get_value(row, 'email', '').lower().strip()
+            is_in_accountability = any(
+                get_value(acc_user, 'email', '').lower().strip() == user_email 
+                for acc_user in accountability_participants
+            )
+            
+            if not is_in_accountability:
+                team_name_participants.append(row)
+                print(f"User {user_id}: temporary_team_name='{temporary_team_name}' (no accountability buddies)")
+    
+    print(f"Found {len(team_name_participants)} participants with team names but no accountability buddies")
+    
     # Create a mapping of email to user data for quick lookup
     email_to_user = {}
     for row in data:
@@ -535,6 +558,53 @@ def group_participants(data, column_mapping):
     
     print(f"Created {len(requested_groups)} requested groups with {accountability_count} participants")
     print(f"Total users assigned to requested groups: {len(assigned_users)}")
+    
+    # Process team name participants and group them by team name
+    if team_name_participants:
+        print(f"\nProcessing {len(team_name_participants)} participants with team names...")
+        
+        # Group team name participants by their team name
+        team_groups = defaultdict(list)
+        for participant in team_name_participants:
+            team_name = get_value(participant, 'temporary_team_name', '').strip()
+            user_id = get_value(participant, 'user_id', 'Unknown')
+            user_email = get_value(participant, 'email', '').lower().strip()
+            
+            # Skip if already assigned to a requested group
+            if user_email in assigned_users:
+                print(f"Skipping User {user_id} ({user_email}): already assigned to a requested group")
+                continue
+            
+            team_groups[team_name].append(participant)
+            print(f"User {user_id}: assigned to team '{team_name}'")
+        
+        # Create requested groups for each team
+        for team_name, team_members in team_groups.items():
+            if team_members:
+                print(f"\nProcessing team '{team_name}' with {len(team_members)} members")
+                
+                # Create groups of up to 5 members from this team
+                i = 0
+                team_group_counter = 1
+                while i < len(team_members):
+                    group_members = team_members[i:i+5]
+                    
+                    # Mark all members as assigned
+                    for member in group_members:
+                        member_email = get_value(member, 'email', '').lower().strip()
+                        assigned_users.add(member_email)
+                    
+                    requested_groups.append(group_members)
+                    accountability_count += len(group_members)
+                    
+                    print(f"Created Team Group '{team_name} {team_group_counter}' with {len(group_members)} members")
+                    for member in group_members:
+                        member_id = get_value(member, 'user_id', 'Unknown')
+                        member_name = get_value(member, 'name', 'Unknown')
+                        print(f"  - User {member_id}: {member_name}")
+                    
+                    i += 5
+                    team_group_counter += 1
     
     # 2. Handle Solo participants (from remaining data)
     solo_count = 0
@@ -865,7 +935,28 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     m.get(column_mapping.get('name'), ''),
                     m.get(column_mapping.get('city'), '')
                 ))
-            row = [f"Requested Group {idx} ({len(group)} members)"]
+            
+            # Determine if this is a team group or accountability buddy group
+            first_member = group[0]
+            team_name = first_member.get(column_mapping.get('temporary_team_name'), '')
+            has_accountability_buddies = first_member.get(column_mapping.get('has_accountability_buddies'), '0')
+            
+            # Check if all members have the same team name and no accountability buddies
+            all_same_team = all(
+                member.get(column_mapping.get('temporary_team_name'), '') == team_name 
+                for member in group
+            )
+            all_no_accountability = all(
+                str(member.get(column_mapping.get('has_accountability_buddies'), '0')).strip().lower() not in ['1', '1.0', 'true', 'yes']
+                for member in group
+            )
+            
+            if all_same_team and all_no_accountability and team_name:
+                # This is a team group
+                row = [f"Team Group {idx} - {team_name} ({len(group)} members)"]
+            else:
+                # This is an accountability buddy group
+                row = [f"Requested Group {idx} ({len(group)} members)"]
             
             # Add user data for each member
             for i in range(5):
@@ -892,6 +983,27 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             
             # Add extra info for the first member
             member = group[0]
+            
+            # Collect all team names from group members
+            team_names = []
+            for group_member in group:
+                team_name = group_member.get(column_mapping.get('temporary_team_name'), '')
+                if team_name and str(team_name).strip() not in ['', 'None', 'nan']:
+                    team_names.append(str(team_name).strip())
+            
+            # Combine team names with "/" separator if they're different
+            combined_team_names = ' / '.join(sorted(set(team_names))) if team_names else ''
+            
+            # Collect all coach names from group members
+            coach_names = []
+            for group_member in group:
+                coach_name = group_member.get(column_mapping.get('previous_coach_name'), '')
+                if coach_name and str(coach_name).strip() not in ['', 'None', 'nan']:
+                    coach_names.append(str(coach_name).strip())
+            
+            # Combine coach names with "/" separator if they're different
+            combined_coach_names = ' / '.join(sorted(set(coach_names))) if coach_names else ''
+            
             row.extend([
                 member.get(column_mapping.get('gender_identity'), ''),
                 member.get(column_mapping.get('sex'), ''),
@@ -901,8 +1013,8 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 member.get(column_mapping.get('province'), ''),
                 member.get(column_mapping.get('city'), ''),
                 member.get(column_mapping.get('state'), ''),
-                member.get(column_mapping.get('temporary_team_name'), ''),
-                member.get(column_mapping.get('previous_coach_name'), '')
+                combined_team_names,
+                combined_coach_names
             ])
             
             ws.append(row)
