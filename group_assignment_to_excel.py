@@ -26,7 +26,9 @@ EXPECTED_COLUMNS = {
     'kaizen_client_type': ['kaizen_client_type', 'kaizenClientType', 'client_type', 'clientType'],
     'accountability_buddies': ['accountability_buddies', 'accountabilityBuddies', 'accountability_buddies', 'buddies'],
     'has_accountability_buddies': ['has_accountability_buddies', 'hasAccountabilityBuddies', 'has_buddies'],
-    'email': ['email', 'user_email', 'email_address', 'useremail', 'userEmail']
+    'email': ['email', 'user_email', 'email_address', 'useremail', 'userEmail'],
+    'temporary_team_name': ['temporaryTeamName', 'temporary_team_name', 'temp_team_name', 'team_name'],
+    'previous_coach_name': ['previousCoachName', 'previous_coach_name', 'prev_coach_name', 'coach_name']
 }
 
 # Helper for color coding
@@ -441,14 +443,10 @@ def group_participants(data, column_mapping):
                 if request_key not in processed_requests:
                     processed_requests.add(request_key)
                     
-                    # Build the group: requester + all requested buddies
-                    group_members = [participant]  # Start with the requester
-                    assigned_users.add(participant_email)  # Mark requester as assigned
-                    
-                    # Add all requested buddies (only if not already assigned)
-                    found_buddies = []
-                    missing_buddies = []
-                    already_assigned_buddies = []
+                    # Check if any requested buddies are already in existing groups
+                    buddies_in_existing_groups = []
+                    available_buddies = []
+                    existing_group_with_buddies = None
                     
                     for email in requested_emails:
                         if email in email_to_user:
@@ -457,30 +455,83 @@ def group_participants(data, column_mapping):
                             
                             # Check if this buddy is already assigned to a requested group
                             if buddy_email in assigned_users:
-                                already_assigned_buddies.append(email)
+                                buddies_in_existing_groups.append(email)
                                 buddy_user_id = get_value(buddy_user, 'user_id', 'Unknown')
-                                print(f"  Skipping buddy {email} -> User {buddy_user_id}: already assigned to another requested group")
+                                print(f"  Buddy {email} -> User {buddy_user_id}: already assigned to another requested group")
+                                
+                                # Find which existing group contains this buddy
+                                for i, existing_group in enumerate(requested_groups):
+                                    existing_emails = [get_value(member, 'email', '').lower().strip() for member in existing_group]
+                                    if buddy_email in existing_emails:
+                                        existing_group_with_buddies = i
+                                        break
                             else:
-                                group_members.append(buddy_user)
-                                assigned_users.add(buddy_email)  # Mark buddy as assigned
-                                found_buddies.append(email)
-                                buddy_user_id = get_value(buddy_user, 'user_id', 'Unknown')
-                                print(f"  Found buddy {email} -> User {buddy_user_id}")
+                                available_buddies.append(email)
                         else:
-                            missing_buddies.append(email)
                             print(f"  Missing buddy: {email}")
                     
-                    if group_members:
-                        requested_groups.append(group_members)
-                        accountability_count += len(group_members)
-                        print(f"Created Requested Group with {len(group_members)} members:")
-                        print(f"  Requester: User {user_id}")
+                    # If buddies are in existing groups, add user to that group
+                    if buddies_in_existing_groups and existing_group_with_buddies is not None:
+                        existing_group = requested_groups[existing_group_with_buddies]
+                        
+                        # Check if the group has space (max 5 members)
+                        if len(existing_group) < 5:
+                            existing_group.append(participant)
+                            assigned_users.add(participant_email)
+                            accountability_count += 1
+                            
+                            existing_group_emails = [get_value(member, 'email', '').lower().strip() for member in existing_group]
+                            print(f"Added User {user_id} to existing Requested Group {existing_group_with_buddies + 1}:")
+                            print(f"  Existing group members: {existing_group_emails}")
+                            print(f"  Group size: {len(existing_group)} members")
+                            print(f"  Requested emails: {requested_emails}")
+                            print(f"  Buddies in existing group: {buddies_in_existing_groups}")
+                        else:
+                            print(f"Cannot add User {user_id} to existing group: group is full (5 members)")
+                            print(f"  Requested emails: {requested_emails}")
+                            print(f"  Buddies in existing groups: {buddies_in_existing_groups}")
+                    
+                    # Only create a new group if there are available buddies and no existing group to join
+                    elif available_buddies:
+                        # Build the group: requester + all available buddies
+                        group_members = [participant]  # Start with the requester
+                        assigned_users.add(participant_email)  # Mark requester as assigned
+                        
+                        found_buddies = []
+                        missing_buddies = []
+                        
+                        for email in available_buddies:
+                            buddy_user = email_to_user[email]
+                            buddy_email = get_value(buddy_user, 'email', '').lower().strip()
+                            
+                            group_members.append(buddy_user)
+                            assigned_users.add(buddy_email)  # Mark buddy as assigned
+                            found_buddies.append(email)
+                            buddy_user_id = get_value(buddy_user, 'user_id', 'Unknown')
+                            print(f"  Found buddy {email} -> User {buddy_user_id}")
+                        
+                        # Add missing buddies to the list
+                        for email in requested_emails:
+                            if email not in email_to_user:
+                                missing_buddies.append(email)
+                                print(f"  Missing buddy: {email}")
+                        
+                        if group_members:
+                            requested_groups.append(group_members)
+                            accountability_count += len(group_members)
+                            print(f"Created new Requested Group with {len(group_members)} members:")
+                            print(f"  Requester: User {user_id}")
+                            print(f"  Requested emails: {requested_emails}")
+                            print(f"  Available buddies: {available_buddies}")
+                            print(f"  Found buddies: {found_buddies}")
+                            if missing_buddies:
+                                print(f"  Missing buddies: {missing_buddies}")
+                            if buddies_in_existing_groups:
+                                print(f"  Buddies already in existing groups: {buddies_in_existing_groups}")
+                    else:
+                        print(f"Skipping User {user_id}: no available buddies and no existing group to join")
                         print(f"  Requested emails: {requested_emails}")
-                        print(f"  Found buddies: {found_buddies}")
-                        if missing_buddies:
-                            print(f"  Missing buddies: {missing_buddies}")
-                        if already_assigned_buddies:
-                            print(f"  Already assigned buddies: {already_assigned_buddies}")
+                        print(f"  Buddies in existing groups: {buddies_in_existing_groups}")
     
     print(f"Created {len(requested_groups)} requested groups with {accountability_count} participants")
     print(f"Total users assigned to requested groups: {len(assigned_users)}")
@@ -795,7 +846,8 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         "User ID 3", "Name 3", "City 3",
         "User ID 4", "Name 4", "City 4",
         "User ID 5", "Name 5", "City 5",
-        "Gender Identity", "Sex", "Residing in PH", "Gender Preference", "Country", "Province", "City", "State"
+        "Gender Identity", "Sex", "Residing in PH", "Gender Preference", "Country", "Province", "City", "State",
+        "Temporary Team Name", "Previous Coach Name"
     ])
     
     # Write requested groups (accountability buddies)
@@ -848,7 +900,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 member.get(column_mapping.get('country'), ''),
                 member.get(column_mapping.get('province'), ''),
                 member.get(column_mapping.get('city'), ''),
-                member.get(column_mapping.get('state'), '')
+                member.get(column_mapping.get('state'), ''),
+                member.get(column_mapping.get('temporary_team_name'), ''),
+                member.get(column_mapping.get('previous_coach_name'), '')
             ])
             
             ws.append(row)
@@ -864,13 +918,38 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
                     
-                    # If this is the 5th member and there's a 6th member, also apply formatting for the 6th member
+                    # If this is the 5th member and there's a 6th member, apply combined formatting
                     if i == 4 and len(group) > 5:
                         member6 = group[5]
                         gender_pref6 = member6.get(column_mapping.get('gender_preference'), '')
                         kaizen_client_type6 = member6.get(column_mapping.get('kaizen_client_type'), '')
-                        # The 6th member's info is concatenated with the 5th member's, so we use the same cells
-                        # but we could apply different formatting if needed
+                        
+                        # For the combined cells (5th and 6th member), we need to apply formatting that considers both members
+                        # Apply gender-based background color for the 5th member (primary)
+                        apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
+                        
+                        # For the name cell, apply formatting based on both members' criteria
+                        name_cell = ws.cell(row=ws.max_row, column=3 + i*3)
+                        
+                        # Check if either member has same_gender preference or is team_member
+                        has_same_gender = (str(gender_pref).lower() == 'same_gender' or 
+                                         str(gender_pref6).lower() == 'same_gender')
+                        is_team_member = (str(kaizen_client_type).lower() == 'team_member' or 
+                                        str(kaizen_client_type6).lower() == 'team_member')
+                        
+                        # Apply combined formatting
+                        if is_team_member:
+                            if has_same_gender:
+                                name_cell.font = Font(bold=True, color="8B0000")  # Bold and dark red
+                            else:
+                                name_cell.font = Font(color="8B0000")  # Dark red only
+                        elif has_same_gender:
+                            name_cell.font = Font(bold=True)  # Bold only
+                        else:
+                            name_cell.font = Font()  # Default font
+                        
+                        # Apply gender-based background color (use 5th member's gender as primary)
+                        apply_color_to_cell(name_cell, member.get(column_mapping.get('gender_identity'), ''))
         
         # After all requested groups are written, apply green highlight to group name cell if group has 5 members
         for row_idx, group_size in group_row_indices:
@@ -910,7 +989,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             member.get(column_mapping.get('country'), ''),
             member.get(column_mapping.get('province'), ''),
             member.get(column_mapping.get('city'), ''),
-            member.get(column_mapping.get('state'), '')
+            member.get(column_mapping.get('state'), ''),
+            member.get(column_mapping.get('temporary_team_name'), ''),
+            member.get(column_mapping.get('previous_coach_name'), '')
         ])
         ws.append(row)
         print(f"Added solo group {idx} with user {member.get(column_mapping.get('user_id'), 'Unknown')}")
@@ -960,7 +1041,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             member.get(column_mapping.get('country'), ''),
             member.get(column_mapping.get('province'), ''),
             member.get(column_mapping.get('city'), ''),
-            member.get(column_mapping.get('state'), '')
+            member.get(column_mapping.get('state'), ''),
+            member.get(column_mapping.get('temporary_team_name'), ''),
+            member.get(column_mapping.get('previous_coach_name'), '')
         ])
         ws.append(row)
         
@@ -1036,7 +1119,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 user.get(column_mapping.get('country'), ''),
                 user.get(column_mapping.get('province'), ''),
                 user.get(column_mapping.get('city'), ''),
-                user.get(column_mapping.get('state'), '')
+                user.get(column_mapping.get('state'), ''),
+                user.get(column_mapping.get('temporary_team_name'), ''),
+                user.get(column_mapping.get('previous_coach_name'), '')
             ])
             
             ws.append(row)
