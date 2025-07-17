@@ -821,11 +821,20 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     member = group[i]
                     location_display = format_location_display(member, column_mapping)
                     
-                    row.extend([
-                        member.get(column_mapping.get('user_id'), ''),
-                        member.get(column_mapping.get('name'), ''),
-                        location_display
-                    ])
+                    # If this is the 5th member and there's a 6th member, concatenate their info
+                    if i == 4 and len(group) > 5:
+                        member6 = group[5]
+                        location_display6 = format_location_display(member6, column_mapping)
+                        user_id_combined = f"{member.get(column_mapping.get('user_id'), '')} / {member6.get(column_mapping.get('user_id'), '')}"
+                        name_combined = f"{member.get(column_mapping.get('name'), '')} / {member6.get(column_mapping.get('name'), '')}"
+                        location_combined = f"{location_display} / {location_display6}"
+                        row.extend([user_id_combined, name_combined, location_combined])
+                    else:
+                        row.extend([
+                            member.get(column_mapping.get('user_id'), ''),
+                            member.get(column_mapping.get('name'), ''),
+                            location_display
+                        ])
                 else:
                     row.extend(["", "", ""])
             
@@ -854,8 +863,16 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
                     apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+                    
+                    # If this is the 5th member and there's a 6th member, also apply formatting for the 6th member
+                    if i == 4 and len(group) > 5:
+                        member6 = group[5]
+                        gender_pref6 = member6.get(column_mapping.get('gender_preference'), '')
+                        kaizen_client_type6 = member6.get(column_mapping.get('kaizen_client_type'), '')
+                        # The 6th member's info is concatenated with the 5th member's, so we use the same cells
+                        # but we could apply different formatting if needed
         
-        # After all requested groups are written, apply green highlight to group name cell if group has 5re members
+        # After all requested groups are written, apply green highlight to group name cell if group has 5 members
         for row_idx, group_size in group_row_indices:
             if group_size >= 5:
                 ws.cell(row=row_idx, column=1).fill = green_fill
