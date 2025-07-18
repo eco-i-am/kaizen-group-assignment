@@ -1145,9 +1145,9 @@ def group_participants(data, column_mapping):
             user_id = get_value(participant, 'user_id', 'Unknown')
             user_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
             
-            # Include all team name participants, even if already assigned
-            # (they might be in accountability groups but should still be considered for team grouping)
-            team_groups[team_name].append(participant)
+            # Only include team name participants who are not already assigned
+            if user_email not in assigned_users:
+                team_groups[team_name].append(participant)
         
         # Process each team name
         for team_name, team_members in team_groups.items():
@@ -1243,10 +1243,12 @@ def group_participants(data, column_mapping):
     for row in remaining_data:
         go_solo_value = str(get_value(row, 'go_solo', '0')).strip()
         user_id = get_value(row, 'user_id', 'Unknown')
+        user_email = normalize_email(get_value(row, 'email', ''), email_mapping)
         # Handle various formats: '1', '1.0', 'True', 'true'
         if go_solo_value.lower() in ['1', '1.0', 'true']:
             solo_groups.append([row])
             solo_count += 1
+            assigned_users.add(user_email)  # Mark as assigned
             user_id_str = str(user_id).strip() if user_id else 'Unknown'
             if user_id_str in user_tracking:
                 user_tracking[user_id_str]['status'] = 'solo'
@@ -1357,6 +1359,10 @@ def group_participants(data, column_mapping):
                     group_members = members[i:i+5]
                     location_info = f"Province: {province}, City: {city_norm}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    # Mark all members as assigned
+                    for member in group_members:
+                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                        assigned_users.add(member_email)
                     group_counter += 1
                     i += 5
                 
@@ -1373,6 +1379,10 @@ def group_participants(data, column_mapping):
                         group_members = members[:5]
                         location_info = f"Province: {province}, City: {city_norm}"
                         grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                        # Mark all members as assigned
+                        for member in group_members:
+                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                            assigned_users.add(member_email)
                         group_counter += 1
                         remaining_by_city[city_norm] = members[5:]
                     elif len(members) == 0:
@@ -1410,6 +1420,10 @@ def group_participants(data, column_mapping):
                             else:
                                 location_info = f"Province: {province} (mixed cities)"
                             grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                            # Mark all members as assigned
+                            for member in group:
+                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                                assigned_users.add(member_email)
                             group_counter += 1
             # --- END NEW LOGIC ---
         
@@ -1437,6 +1451,10 @@ def group_participants(data, column_mapping):
                     group_members = members[i:i+5]
                     location_info = f"Country: {country}, State: {state}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    # Mark all members as assigned
+                    for member in group_members:
+                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                        assigned_users.add(member_email)
                     group_counter += 1
                     i += 5
                 
@@ -1472,6 +1490,10 @@ def group_participants(data, column_mapping):
                     timezone_label = get_timezone_label(timezone_region)
                     location_info = f"Timezone: {timezone_label}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    # Mark all members as assigned
+                    for member in group_members:
+                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                        assigned_users.add(member_email)
                     group_counter += 1
                     i += 5
     
