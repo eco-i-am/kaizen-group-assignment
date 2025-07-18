@@ -1693,6 +1693,8 @@ def group_participants(data, column_mapping):
         if user_email not in assigned_users:
             remaining_data.append(row)
     
+
+    
     for row in remaining_data:
         go_solo_value = str(get_value(row, 'go_solo', '0')).strip()
         user_id = get_value(row, 'user_id', 'Unknown')
@@ -1706,6 +1708,8 @@ def group_participants(data, column_mapping):
             if user_id_str in user_tracking:
                 user_tracking[user_id_str]['status'] = 'solo'
                 user_tracking[user_id_str]['reason'] = 'go_solo = True'
+    
+
     
     # 3. Handle non-solo participants (from remaining data)
     
@@ -1950,6 +1954,55 @@ def group_participants(data, column_mapping):
                     group_counter += 1
                     i += 5
     
+    # Move single-member requested groups to regular groups BEFORE regular grouping
+    single_member_requested_groups = []
+    multi_member_requested_groups = []
+    
+    for group in requested_groups:
+        if len(group) == 1:
+            # Check if this single-member group should be moved to regular groups
+            user = group[0]
+            team_name = get_value(user, 'temporary_team_name', '')
+            has_team_name = team_name and str(team_name).strip() not in ['', 'None', 'nan']
+            has_accountability_buddies = str(get_value(user, 'has_accountability_buddies', '0')).strip().lower() in ['1', '1.0', 'true', 'yes']
+            
+            # Move ALL single-member groups to regular groups (both accountability buddy and team name groups)
+            # This ensures no users are left isolated in single-member groups
+            if True:  # Always move single-member groups to regular groups
+                # Single member group - move to regular groups
+                single_member_requested_groups.append(user)
+                
+                # Update user tracking
+                user_email = normalize_email(get_value(user, 'email', ''), email_mapping)
+                for user_id, info in user_tracking.items():
+                    if info.get('email') == user_email:
+                        info['status'] = 'regular_grouping'
+                        info['reason'] = 'Moved from single-member requested group to regular grouping'
+                        break
+                
+                # Remove from assigned_users so they can go through regular grouping
+                assigned_users.discard(user_email)
+            else:
+                # User has team name and no accountability buddies - keep as requested group (team name group)
+                multi_member_requested_groups.append(group)
+        else:
+            # Multi-member group - keep as requested group
+            multi_member_requested_groups.append(group)
+    
+    # Add single-member requested group users back to data for regular grouping processing
+    if single_member_requested_groups:
+        for user in single_member_requested_groups:
+            # Add user back to the data so they go through regular grouping logic
+            data.append(user)
+    
+    # Re-process remaining_data to include single-member users
+    remaining_data = []
+    for row in data:
+        user_email = normalize_email(get_value(row, 'email', ''), email_mapping)
+        # Skip if user is already assigned to requested groups
+        if user_email not in assigned_users:
+            remaining_data.append(row)
+    
     # Update remaining users as regular grouping
     for user_id, info in user_tracking.items():
         if info['status'] == 'original':
@@ -1960,16 +2013,16 @@ def group_participants(data, column_mapping):
     grouped = merge_small_groups(grouped, column_mapping)
     
     # Generate diagnostic report
-    generate_diagnostic_report(user_tracking, original_count, solo_groups, grouped, excluded_users, requested_groups, column_mapping)
+    generate_diagnostic_report(user_tracking, original_count, solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
     
     # Generate missing users analysis
-    generate_missing_users_analysis(user_tracking, original_count, solo_groups, grouped, excluded_users, requested_groups, column_mapping)
+    generate_missing_users_analysis(user_tracking, original_count, solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
     
     # Check for duplicates
-    check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups, column_mapping)
+    check_for_duplicates(solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
     
-    # No merging of small groups - keep all groups as created
-    return solo_groups, grouped, excluded_users, requested_groups
+    # Return the updated groups
+    return solo_groups, grouped, excluded_users, multi_member_requested_groups
 
 def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None, requested_groups=None):
     wb = Workbook()
