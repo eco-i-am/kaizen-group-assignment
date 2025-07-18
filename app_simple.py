@@ -20,7 +20,7 @@ def format_location_display(member, column_mapping):
         province = member.get(column_mapping.get('province'), '')
         
         # Use "MM" as acronym for Metro Manila
-        if province and province.lower() == 'metro manila':
+        if province and str(province).lower() == 'metro manila':
             province = 'MM'
         
         if city and province:
