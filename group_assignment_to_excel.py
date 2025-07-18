@@ -1293,6 +1293,70 @@ def group_participants(data, column_mapping):
         
         return component
     
+    def split_large_component_by_direct_connections(connected_emails, max_group_size=7):
+        """Split large connected components into smaller groups prioritizing direct connections"""
+        if len(connected_emails) <= max_group_size:
+            return [list(connected_emails)]
+        
+        # Create a list of users with their direct connections
+        users_with_direct_connections = []
+        for email in connected_emails:
+            if email in email_to_user:
+                user = email_to_user[email]
+                direct_buddies = set()
+                
+                # Get direct accountability buddies for this user
+                accountability_buddies = get_value(user, 'accountability_buddies', '')
+                if accountability_buddies:
+                    direct_emails = extract_emails_from_accountability_buddies(accountability_buddies, email_mapping)
+                    # Only include emails that are in our connected component
+                    direct_buddies = {email for email in direct_emails if email in connected_emails}
+                
+                users_with_direct_connections.append({
+                    'email': email,
+                    'user': user,
+                    'direct_buddies': direct_buddies,
+                    'buddy_count': len(direct_buddies)
+                })
+        
+        # Sort by number of direct connections (descending) to prioritize users with more connections
+        users_with_direct_connections.sort(key=lambda x: x['buddy_count'], reverse=True)
+        
+        # Create groups starting with users who have the most direct connections
+        groups = []
+        assigned_emails = set()
+        
+        for user_info in users_with_direct_connections:
+            email = user_info['email']
+            user = user_info['user']
+            direct_buddies = user_info['direct_buddies']
+            
+            # Skip if already assigned
+            if email in assigned_emails:
+                continue
+            
+            # Start a new group with this user
+            current_group = [email]
+            assigned_emails.add(email)
+            
+            # Add direct buddies to this group (prioritizing direct connections)
+            for buddy_email in direct_buddies:
+                if buddy_email not in assigned_emails and len(current_group) < max_group_size:
+                    current_group.append(buddy_email)
+                    assigned_emails.add(buddy_email)
+            
+            # If group is still small, add other unassigned users from the component
+            if len(current_group) < max_group_size:
+                for other_user_info in users_with_direct_connections:
+                    other_email = other_user_info['email']
+                    if other_email not in assigned_emails and len(current_group) < max_group_size:
+                        current_group.append(other_email)
+                        assigned_emails.add(other_email)
+            
+            groups.append(current_group)
+        
+        return groups
+    
     # Alternative approach: ensure all referenced users are included
     def ensure_referenced_users_included():
         """Ensure that all users who are referenced by others are included in the same groups"""
@@ -1326,16 +1390,33 @@ def group_participants(data, column_mapping):
             connected_emails = find_connected_component(participant_email, visited)
             
             if len(connected_emails) > 1:
-                # Create a group with all connected users
-                mutual_group = []
-                for email in connected_emails:
-                    if email in email_to_user:
-                        user = email_to_user[email]
-                        mutual_group.append(user)
-                        processed_users.add(email)
-                
-                if len(mutual_group) > 1:
-                    mutual_buddy_groups.append(mutual_group)
+                # Split large components into smaller groups prioritizing direct connections
+                if len(connected_emails) > 7:
+                    # Use the splitting function for large components
+                    email_groups = split_large_component_by_direct_connections(connected_emails, max_group_size=7)
+                    
+                    for email_group in email_groups:
+                        if len(email_group) > 1:
+                            mutual_group = []
+                            for email in email_group:
+                                if email in email_to_user:
+                                    user = email_to_user[email]
+                                    mutual_group.append(user)
+                                    processed_users.add(email)
+                            
+                            if len(mutual_group) > 1:
+                                mutual_buddy_groups.append(mutual_group)
+                else:
+                    # For smaller components, create a single group as before
+                    mutual_group = []
+                    for email in connected_emails:
+                        if email in email_to_user:
+                            user = email_to_user[email]
+                            mutual_group.append(user)
+                            processed_users.add(email)
+                    
+                    if len(mutual_group) > 1:
+                        mutual_buddy_groups.append(mutual_group)
             else:
                 # Single user - mark as processed but don't create a group yet
                 processed_users.add(participant_email)
