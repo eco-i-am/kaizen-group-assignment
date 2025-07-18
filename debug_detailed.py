@@ -1,5 +1,5 @@
 import pandas as pd
-from group_assignment_to_excel import group_participants, find_column_mapping
+from group_assignment_to_excel import find_column_mapping
 
 # Read the data
 df = pd.read_excel('merged_users_grouping_preferences_20250717_201414.xlsx')
@@ -10,7 +10,7 @@ column_mapping = find_column_mapping(df)
 # Target emails to debug
 target_emails = ['lilyroseanne.gutierrez@gmail.com', 'carolineongco0392@yahoo.com.au', 'karenpicache@gmail.com']
 
-print('Debugging missing users:')
+print('Detailed debugging of missing users:')
 print('=' * 60)
 
 # Helper function to get value safely
@@ -31,41 +31,46 @@ for email in target_emails:
         
         print(f'  User ID: {get_value(user_dict, "user_id")}')
         print(f'  Name: {get_value(user_dict, "name")}')
-        print(f'  joiningAsStudent: {get_value(user_dict, "joining_as_student")}')
-        print(f'  goSolo: {get_value(user_dict, "go_solo")}')
-        print(f'  hasAccountabilityBuddies: {get_value(user_dict, "has_accountability_buddies")}')
-        print(f'  accountabilityBuddies: {get_value(user_dict, "accountability_buddies")}')
-        print(f'  temporaryTeamName: {get_value(user_dict, "temporary_team_name")}')
         
-        # Check if they should be excluded
+        # Check joiningAsStudent
         joining_value = get_value(user_dict, 'joining_as_student', 'True')
         joining_str = str(joining_value).strip().lower()
-        if joining_str in ['false', '0', '0.0', 'no']:
-            print(f'  ❌ EXCLUDED: joiningAsStudent = {joining_value}')
-        else:
-            print(f'  ✅ NOT EXCLUDED: joiningAsStudent = {joining_value}')
+        print(f'  joiningAsStudent: {joining_value} -> {joining_str}')
         
-        # Check if they should be in accountability buddies
+        # Check goSolo
+        go_solo_value = str(get_value(user_dict, 'go_solo', '0')).strip()
+        print(f'  goSolo: {go_solo_value}')
+        
+        # Check accountability buddies
         has_buddies = str(get_value(user_dict, 'has_accountability_buddies', '0')).strip().lower() in ['1', '1.0', 'true', 'yes']
         accountability_buddies = get_value(user_dict, 'accountability_buddies', '')
-        has_buddy_data = accountability_buddies and str(accountability_buddies).strip() not in ['', 'None', 'nan', '[None]', '[None, None]', "{'1': None}"]
+        print(f'  hasAccountabilityBuddies: {get_value(user_dict, "has_accountability_buddies")} -> {has_buddies}')
+        print(f'  accountabilityBuddies: {accountability_buddies}')
+        print(f'  accountabilityBuddies type: {type(accountability_buddies)}')
         
-        print(f'  has_buddies: {has_buddies}')
+        # Test the has_buddy_data logic
+        has_buddy_data = False
+        if accountability_buddies:
+            accountability_str = str(accountability_buddies).strip()
+            print(f'  accountability_str: "{accountability_str}"')
+            
+            if accountability_str not in ['', 'None', 'nan', '[None]', '[None, None]', "{'1': None}"]:
+                if isinstance(accountability_buddies, str):
+                    cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
+                    print(f'  cleaned: "{cleaned}"')
+                    emails = [email.strip().lower() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                    print(f'  extracted emails: {emails}')
+                    has_buddy_data = len(emails) > 0
+                else:
+                    has_buddy_data = True
+        
         print(f'  has_buddy_data: {has_buddy_data}')
-        print(f'  accountability_buddies type: {type(accountability_buddies)}')
-        print(f'  accountability_buddies value: {accountability_buddies}')
         
+        # Check if they should be in accountability buddies
         if has_buddies and has_buddy_data:
             print(f'  ✅ Should be in accountability buddies group')
         else:
             print(f'  ❌ Should NOT be in accountability buddies group')
-        
-        # Check if they should be solo
-        go_solo_value = str(get_value(user_dict, 'go_solo', '0')).strip()
-        if go_solo_value.lower() in ['1', '1.0', 'true']:
-            print(f'  ✅ Should be in solo group')
-        else:
-            print(f'  ❌ Should NOT be in solo group')
             
     else:
         print(f'  ❌ User not found in data')

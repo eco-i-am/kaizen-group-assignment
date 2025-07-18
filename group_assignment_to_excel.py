@@ -5,8 +5,141 @@ from openpyxl.styles import PatternFill, Font
 import re
 
 # File paths - Updated to use merged Excel file
-INPUT_FILE = 'sample_merged_data.xlsx'  # Change this to your merged file
+INPUT_FILE = 'merged_users_grouping_preferences_20250717_201414.xlsx'  # Change this to your merged file
 OUTPUT_FILE = 'grouped_participants.xlsx'
+
+def create_email_mapping(data, column_mapping):
+    """Dynamically create email mapping based on user names to handle email mismatches"""
+    email_mapping = {}
+    name_to_emails = {}
+    
+    # First pass: collect all emails for each user name
+    for user in data:
+        name = user.get(column_mapping.get('name'), '').strip()
+        email = user.get(column_mapping.get('email'), '').strip()
+        
+        if name and email and '@' in email:
+            if name not in name_to_emails:
+                name_to_emails[name] = []
+            name_to_emails[name].append(email.lower())
+    
+    # Second pass: create mapping for users with multiple emails
+    for name, emails in name_to_emails.items():
+        if len(emails) > 1:
+            # User has multiple email addresses - use the first one as canonical
+            canonical_email = emails[0]
+            for email in emails:
+                email_mapping[email] = canonical_email
+    
+    # Third pass: handle accountability buddy email mismatches
+    # Look for cases where someone's accountability buddies reference a different email for the same person
+    for user in data:
+        name = user.get(column_mapping.get('name'), '').strip()
+        email = user.get(column_mapping.get('email'), '').strip()
+        accountability_buddies = user.get(column_mapping.get('accountability_buddies'), '')
+        
+        if name and email and accountability_buddies:
+            # Extract emails from accountability buddies
+            if isinstance(accountability_buddies, str):
+                cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
+                buddy_emails = [email.strip().lower() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                
+                # For each buddy email, check if it matches any user's name but with a different email
+                for buddy_email in buddy_emails:
+                    # Find if this email belongs to a user with a different name
+                    for other_user in data:
+                        other_name = other_user.get(column_mapping.get('name'), '').strip()
+                        other_email = other_user.get(column_mapping.get('email'), '').strip()
+                        
+                        if other_email and other_email.lower() == buddy_email:
+                            # This email exists but belongs to a different user
+                            # Check if the names are similar (could be the same person with different email)
+                            if other_name and name and other_name != name:
+                                # Check if names are similar (same person with different email variations)
+                                name_similarity = check_name_similarity(name, other_name)
+                                if name_similarity > 0.8:  # High similarity threshold
+                                    # Map the buddy email to the user's actual email
+                                    email_mapping[buddy_email] = email.lower()
+                                    print(f"🔗 Email mapping created: {buddy_email} -> {email.lower()} (for {name})")
+    
+    # Fourth pass: handle missing emails in accountability buddies
+    # Look for emails in accountability buddies that don't exist in the data
+    all_existing_emails = set()
+    for user in data:
+        email = user.get(column_mapping.get('email'), '').strip()
+        if email and '@' in email:
+            all_existing_emails.add(email.lower())
+    
+    # Create a mapping of email patterns to user names
+    email_to_name_mapping = {}
+    for user in data:
+        name = user.get(column_mapping.get('name'), '').strip()
+        email = user.get(column_mapping.get('email'), '').strip()
+        if name and email and '@' in email:
+            email_to_name_mapping[email.lower()] = name
+    
+    for user in data:
+        name = user.get(column_mapping.get('name'), '').strip()
+        email = user.get(column_mapping.get('email'), '').strip()
+        accountability_buddies = user.get(column_mapping.get('accountability_buddies'), '')
+        
+        if name and email and accountability_buddies:
+            # Extract emails from accountability buddies
+            if isinstance(accountability_buddies, str):
+                cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
+                buddy_emails = [email.strip().lower() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                
+                # For each buddy email that doesn't exist in the data
+                for buddy_email in buddy_emails:
+                    if buddy_email not in all_existing_emails:
+                        # This email doesn't exist in the data
+                        # Try to find a user whose name matches the email pattern
+                        # For example, jaw.ybanez@yahoo.com should map to Jaw Ybañez
+                        
+                        # Extract username from email (before @)
+                        username = buddy_email.split('@')[0].lower()
+                        
+                        # Look for a user whose name contains the username
+                        for other_user in data:
+                            other_name = other_user.get(column_mapping.get('name'), '').strip()
+                            other_email = other_user.get(column_mapping.get('email'), '').strip()
+                            
+                            if other_name and other_email:
+                                # Check if the username appears in the name
+                                other_name_lower = other_name.lower()
+                                if username in other_name_lower or any(word in username for word in other_name_lower.split()):
+                                    # Found a match - map the missing email to this user's actual email
+                                    email_mapping[buddy_email] = other_email.lower()
+                                    print(f"🔗 Missing email mapping created: {buddy_email} -> {other_email.lower()} (for {other_name})")
+                                    break
+    
+    return email_mapping
+
+def check_name_similarity(name1, name2):
+    """Check similarity between two names (simple implementation)"""
+    if not name1 or not name2:
+        return 0
+    
+    # Convert to lowercase and split into words
+    words1 = set(name1.lower().split())
+    words2 = set(name2.lower().split())
+    
+    # Calculate Jaccard similarity
+    intersection = len(words1.intersection(words2))
+    union = len(words1.union(words2))
+    
+    if union == 0:
+        return 0
+    
+    return intersection / union
+
+def normalize_email(email, email_mapping):
+    """Normalize email addresses using the dynamic mapping"""
+    if not email:
+        return email
+    
+    email_lower = email.lower().strip()
+    return email_mapping.get(email_lower, email_lower)
 
 # Column mapping for merged data (will be dynamically determined)
 # These are the expected column names in the merged data
@@ -677,6 +810,9 @@ def group_participants(data, column_mapping):
     grouped = defaultdict(list)
     group_counter = 1
     
+    # Create dynamic email mapping
+    email_mapping = create_email_mapping(data, column_mapping)
+    
     # User tracking for diagnostics
     user_tracking = {}
     original_count = len(data)
@@ -767,7 +903,20 @@ def group_participants(data, column_mapping):
         has_buddies = str(has_accountability_buddies).strip().lower() in ['1', '1.0', 'true', 'yes']
         
         # Check if accountability_buddies field has valid data
-        has_buddy_data = accountability_buddies and str(accountability_buddies).strip() not in ['', 'None', 'nan', '[None]', '[None, None]', "{'1': None}"]
+        has_buddy_data = False
+        if accountability_buddies:
+            accountability_str = str(accountability_buddies).strip()
+            # Check if it's not empty and not just None values
+            if accountability_str not in ['', 'None', 'nan', '[None]', '[None, None]', "{'1': None}"]:
+                # For string representations of lists, check if there are actual email addresses
+                if isinstance(accountability_buddies, str):
+                    # Remove brackets and quotes, split by comma
+                    cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
+                    emails = [email.strip().lower() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                    has_buddy_data = len(emails) > 0
+                else:
+                    # For actual lists
+                    has_buddy_data = True
         
         if has_buddies and has_buddy_data:
             accountability_participants.append(row)
@@ -811,7 +960,8 @@ def group_participants(data, column_mapping):
         email = get_value(row, 'email', '')
         
         if email and '@' in email:
-            email_to_user[email.lower().strip()] = row
+            normalized_email = normalize_email(email, email_mapping)
+            email_to_user[normalized_email] = row
     
     # Process each participant with accountability buddies
     
@@ -822,7 +972,7 @@ def group_participants(data, column_mapping):
     for participant in accountability_participants:
         accountability_buddies = get_value(participant, 'accountability_buddies', '')
         user_id = get_value(participant, 'user_id', 'Unknown')
-        participant_email = get_value(participant, 'email', '').lower().strip()
+        participant_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
         
         # Skip if this participant is already assigned to a requested group
         if participant_email in assigned_users:
@@ -832,7 +982,7 @@ def group_participants(data, column_mapping):
         if isinstance(accountability_buddies, str):
             # Remove brackets and quotes, split by comma
             cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
-            requested_emails = [email.strip().lower() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+            requested_emails = [normalize_email(email.strip(), email_mapping) for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
             
             if requested_emails:
                 # Create a unique key for this request to avoid duplicates
@@ -849,7 +999,7 @@ def group_participants(data, column_mapping):
                     for email in requested_emails:
                         if email in email_to_user:
                             buddy_user = email_to_user[email]
-                            buddy_email = get_value(buddy_user, 'email', '').lower().strip()
+                            buddy_email = normalize_email(get_value(buddy_user, 'email', ''), email_mapping)
                             
                             # Check if this buddy is already assigned to a requested group
                             if buddy_email in assigned_users:
@@ -857,7 +1007,7 @@ def group_participants(data, column_mapping):
                                 
                                 # Find which existing group contains this buddy
                                 for i, existing_group in enumerate(requested_groups):
-                                    existing_emails = [get_value(member, 'email', '').lower().strip() for member in existing_group]
+                                    existing_emails = [normalize_email(get_value(member, 'email', ''), email_mapping) for member in existing_group]
                                     if buddy_email in existing_emails:
                                         existing_group_with_buddies = i
                                         break
@@ -875,10 +1025,27 @@ def group_participants(data, column_mapping):
                             existing_group.append(participant)
                             assigned_users.add(participant_email)
                             accountability_count += 1
+                            
                         else:
-                            pass
+                            # Create a new group for this user since existing group is full
+                            group_members = [participant]
+                            assigned_users.add(participant_email)
+                            
+                            # Add any available buddies
+                            for email in available_buddies:
+                                if email in email_to_user:
+                                    buddy_user = email_to_user[email]
+                                    buddy_email = normalize_email(get_value(buddy_user, 'email', ''), email_mapping)
+                                    if buddy_email not in assigned_users:
+                                        group_members.append(buddy_user)
+                                        assigned_users.add(buddy_email)
+                            
+                            if group_members:
+                                requested_groups.append(group_members)
+                                accountability_count += len(group_members)
+                                
                     
-                    # Only create a new group if there are available buddies and no existing group to join
+                    # Create a new group with available buddies (if any)
                     elif available_buddies:
                         # Build the group: requester + all available buddies
                         group_members = [participant]  # Start with the requester
@@ -889,7 +1056,7 @@ def group_participants(data, column_mapping):
                         
                         for email in available_buddies:
                             buddy_user = email_to_user[email]
-                            buddy_email = get_value(buddy_user, 'email', '').lower().strip()
+                            buddy_email = normalize_email(get_value(buddy_user, 'email', ''), email_mapping)
                             
                             group_members.append(buddy_user)
                             assigned_users.add(buddy_email)  # Mark buddy as assigned
@@ -903,8 +1070,62 @@ def group_participants(data, column_mapping):
                         if group_members:
                             requested_groups.append(group_members)
                             accountability_count += len(group_members)
+                            
+                    
+                    # Create a group for the requester even if no buddies are available
                     else:
-                        pass
+                        # Create a group with just the requester (missing buddies)
+                        group_members = [participant]
+                        assigned_users.add(participant_email)
+                        
+                        if group_members:
+                            requested_groups.append(group_members)
+                            accountability_count += len(group_members)
+                else:
+                    # Request key already processed - check if user should be added to existing group
+                    
+                    # Find existing group that contains any of the requested buddies
+                    existing_group_with_buddies = None
+                    for email in requested_emails:
+                        if email in email_to_user:
+                            buddy_user = email_to_user[email]
+                            buddy_email = normalize_email(get_value(buddy_user, 'email', ''), email_mapping)
+                            
+                            if buddy_email in assigned_users:
+                                # Find which existing group contains this buddy
+                                for i, existing_group in enumerate(requested_groups):
+                                    existing_emails = [normalize_email(get_value(member, 'email', ''), email_mapping) for member in existing_group]
+                                    if buddy_email in existing_emails:
+                                        existing_group_with_buddies = i
+                                        break
+                                if existing_group_with_buddies is not None:
+                                    break
+                    
+                    if existing_group_with_buddies is not None:
+                        existing_group = requested_groups[existing_group_with_buddies]
+                        
+                        # Check if the group has space (max 5 members)
+                        if len(existing_group) < 5:
+                            existing_group.append(participant)
+                            assigned_users.add(participant_email)
+                            accountability_count += 1
+                        else:
+                            # Create a new group for this user since existing group is full
+                            group_members = [participant]
+                            assigned_users.add(participant_email)
+                            
+                            if group_members:
+                                requested_groups.append(group_members)
+                                accountability_count += len(group_members)
+                    else:
+                        # No existing group found - create a solo group
+                        group_members = [participant]
+                        assigned_users.add(participant_email)
+                        
+                        if group_members:
+                            requested_groups.append(group_members)
+                            accountability_count += len(group_members)
+
     
     # Process team name participants and group them by team name
     if team_name_participants:
@@ -914,7 +1135,7 @@ def group_participants(data, column_mapping):
         for participant in team_name_participants:
             team_name = get_value(participant, 'temporary_team_name', '').strip()
             user_id = get_value(participant, 'user_id', 'Unknown')
-            user_email = get_value(participant, 'email', '').lower().strip()
+            user_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
             
             # Skip if already assigned to a requested group
             if user_email in assigned_users:
@@ -933,7 +1154,7 @@ def group_participants(data, column_mapping):
                     
                     # Mark all members as assigned
                     for member in group_members:
-                        member_email = get_value(member, 'email', '').lower().strip()
+                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
                         assigned_users.add(member_email)
                     
                     requested_groups.append(group_members)
@@ -947,7 +1168,7 @@ def group_participants(data, column_mapping):
     # Remove accountability participants and already assigned users from data for solo processing
     remaining_data = []
     for row in data:
-        user_email = get_value(row, 'email', '').lower().strip()
+        user_email = normalize_email(get_value(row, 'email', ''), email_mapping)
         # Skip if user is in accountability participants or already assigned to requested groups
         if row not in accountability_participants and user_email not in assigned_users:
             remaining_data.append(row)
@@ -1238,6 +1459,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             first_member = group[0]
             team_name = first_member.get(column_mapping.get('temporary_team_name'), '')
             has_accountability_buddies = first_member.get(column_mapping.get('has_accountability_buddies'), '0')
+            accountability_buddies = first_member.get(column_mapping.get('accountability_buddies'), '')
             
             # Check if all members have the same team name and no accountability buddies
             all_same_team = all(
@@ -1254,7 +1476,30 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 row = [f"Team Group {idx} - {team_name} ({len(group)} members)"]
             else:
                 # This is an accountability buddy group
-                row = [f"Requested Group {idx} ({len(group)} members)"]
+                # Check for missing buddies
+                missing_buddies_info = ""
+                if accountability_buddies and str(accountability_buddies).strip() not in ['', 'None', 'nan']:
+                    # Extract emails from accountability_buddies
+                    if isinstance(accountability_buddies, str):
+                        cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
+                        requested_emails = [email.strip().lower() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                        
+                        # Get emails of current group members
+                        group_emails = []
+                        for member in group:
+                            email = member.get(column_mapping.get('email'), '')
+                            if email and '@' in email:
+                                group_emails.append(email.lower().strip())
+                        
+                        # Find missing buddies
+                        missing_buddies = [email for email in requested_emails if email not in group_emails]
+                        
+                        if missing_buddies:
+                            missing_buddies_info = f" - Missing: {', '.join(missing_buddies[:3])}"
+                            if len(missing_buddies) > 3:
+                                missing_buddies_info += f" (+{len(missing_buddies)-3} more)"
+                
+                row = [f"Requested Group {idx} ({len(group)} members){missing_buddies_info}"]
             
             # Add user data for each member (up to 7)
             for i in range(7):
