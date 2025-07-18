@@ -999,17 +999,24 @@ def group_participants(data, column_mapping):
     
     # Second pass: collect participants with temporary team names (even without accountability buddies)
     
-    # Second pass: collect participants with temporary team names (including those with accountability buddies)
+    # Second pass: collect participants with temporary team names (EXCLUDING those with accountability buddies)
     team_name_participants = []
     for row in data:
         temporary_team_name = get_value(row, 'temporary_team_name', '')
         user_id = get_value(row, 'user_id', 'Unknown')
+        user_email = normalize_email(get_value(row, 'email', ''), email_mapping)
         
         # Check if user has a valid temporary team name
         has_team_name = temporary_team_name and str(temporary_team_name).strip() not in ['', 'None', 'nan']
         
-        if has_team_name:
-            # Include ALL users with team names, regardless of accountability buddies
+        # Check if user is already in accountability_participants (has accountability buddies)
+        is_accountability_participant = any(
+            normalize_email(get_value(acc_user, 'email', ''), email_mapping) == user_email 
+            for acc_user in accountability_participants
+        )
+        
+        if has_team_name and not is_accountability_participant:
+            # Only include users with team names who DON'T have accountability buddies
             team_name_participants.append(row)
             user_id_str = str(user_id).strip() if user_id else 'Unknown'
             if user_id_str in user_tracking:
@@ -1035,53 +1042,104 @@ def group_participants(data, column_mapping):
         team_name_emails.add(participant_email)
     
     # Pre-process: Group users with mutual buddies and their referenced buddies
+    # Use a more comprehensive approach to find all connected groups
     mutual_buddy_groups = []
     processed_users = set()
     assigned_users = set()  # Track users already assigned to requested groups
     
+    # Create a graph of all accountability buddy relationships
+    buddy_graph = {}
     for participant in accountability_participants:
         participant_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
-        
-        if participant_email in processed_users:
-            continue
-        
-        # Find all users who want to be grouped together
-        mutual_group = [participant]
-        processed_users.add(participant_email)
-        
-        # Get this user's buddies
         accountability_buddies = get_value(participant, 'accountability_buddies', '')
         requested_emails = extract_emails_from_accountability_buddies(accountability_buddies, email_mapping)
         
-        # Find buddies who also reference this user (mutual relationships)
+        if participant_email not in buddy_graph:
+            buddy_graph[participant_email] = set()
+        
+        # Add direct references
         for email in requested_emails:
             if email in email_to_user:
-                buddy_user = email_to_user[email]
-                buddy_email = normalize_email(get_value(buddy_user, 'email', ''), email_mapping)
-                
-                if buddy_email not in processed_users:
-                    # Check if this buddy also references the original user
-                    buddy_buddies = get_value(buddy_user, 'accountability_buddies', '')
-                    buddy_requested = extract_emails_from_accountability_buddies(buddy_buddies, email_mapping)
-                    if participant_email in buddy_requested:
-                        mutual_group.append(buddy_user)
-                        processed_users.add(buddy_email)
+                buddy_graph[participant_email].add(email)
         
-        # Also include any buddies that this user references (even if not mutual)
-        for email in requested_emails:
-            if email in email_to_user:
-                buddy_user = email_to_user[email]
-                buddy_email = normalize_email(get_value(buddy_user, 'email', ''), email_mapping)
-                
-                if buddy_email not in processed_users:
-                    mutual_group.append(buddy_user)
-                    processed_users.add(buddy_email)
+        # Also add reverse references (users who reference this participant)
+        for other_participant in accountability_participants:
+            other_email = normalize_email(get_value(other_participant, 'email', ''), email_mapping)
+            other_buddies = get_value(other_participant, 'accountability_buddies', '')
+            other_requested_emails = extract_emails_from_accountability_buddies(other_buddies, email_mapping)
+            
+            if participant_email in other_requested_emails:
+                if other_email not in buddy_graph:
+                    buddy_graph[other_email] = set()
+                buddy_graph[other_email].add(participant_email)
+    
+    # Find all connected components using DFS
+    def find_connected_component(start_email, visited):
+        """Find all emails connected to start_email through buddy relationships"""
+        if start_email in visited:
+            return set()
         
-        if len(mutual_group) > 1:
-            mutual_buddy_groups.append(mutual_group)
-        else:
-            # Single user - will be processed normally
-            mutual_group = [participant]
+        visited.add(start_email)
+        component = {start_email}
+        
+        if start_email in buddy_graph:
+            for buddy_email in buddy_graph[start_email]:
+                if buddy_email in email_to_user:  # Only include emails that exist in our data
+                    component.update(find_connected_component(buddy_email, visited))
+        
+        # Also check for reverse connections (users who reference this email)
+        for other_email, buddies in buddy_graph.items():
+            if start_email in buddies and other_email not in visited:
+                component.update(find_connected_component(other_email, visited))
+        
+        return component
+    
+    # Alternative approach: ensure all referenced users are included
+    def ensure_referenced_users_included():
+        """Ensure that all users who are referenced by others are included in the same groups"""
+        # Create a mapping of referenced users to their referrers
+        referenced_to_referrers = {}
+        for email, buddies in buddy_graph.items():
+            for buddy_email in buddies:
+                if buddy_email in email_to_user:
+                    if buddy_email not in referenced_to_referrers:
+                        referenced_to_referrers[buddy_email] = set()
+                    referenced_to_referrers[buddy_email].add(email)
+        
+        # For each referenced user, ensure they're in the same group as their referrers
+        for referenced_email, referrers in referenced_to_referrers.items():
+            if referenced_email not in buddy_graph:  # User has no outgoing edges
+                # Add this user to the buddy graph with connections to all referrers
+                if referenced_email not in buddy_graph:
+                    buddy_graph[referenced_email] = set()
+                buddy_graph[referenced_email].update(referrers)
+    
+    # Call the function to ensure referenced users are included
+    ensure_referenced_users_included()
+    
+    # Find all connected components
+    visited = set()
+    for participant in accountability_participants:
+        participant_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
+        
+        if participant_email not in visited:
+            # Find all users connected to this participant
+            connected_emails = find_connected_component(participant_email, visited)
+            
+            if len(connected_emails) > 1:
+                # Create a group with all connected users
+                mutual_group = []
+                for email in connected_emails:
+                    if email in email_to_user:
+                        user = email_to_user[email]
+                        mutual_group.append(user)
+                        processed_users.add(email)
+                
+                if len(mutual_group) > 1:
+                    mutual_buddy_groups.append(mutual_group)
+            else:
+                # Single user - mark as processed but don't create a group yet
+                processed_users.add(participant_email)
     
     # Process mutual buddy groups first
     for mutual_group in mutual_buddy_groups:
@@ -1155,9 +1213,20 @@ def group_participants(data, column_mapping):
                         participant_email_normalized = normalize_email(get_value(participant, 'email', ''), email_mapping)
                         existing_emails = [normalize_email(get_value(member, 'email', ''), email_mapping) for member in existing_group]
                         if participant_email_normalized not in existing_emails:
+                            # Add participant to existing group
                             existing_group.append(participant)
                             assigned_users.add(participant_email)
                             accountability_count += 1
+                            
+                            # Also add any available buddies to the same group if there's space
+                            for email in available_buddies:
+                                if email in email_to_user:
+                                    buddy_user = email_to_user[email]
+                                    buddy_email = normalize_email(get_value(buddy_user, 'email', ''), email_mapping)
+                                    if buddy_email not in assigned_users and len(existing_group) < 5:
+                                        existing_group.append(buddy_user)
+                                        assigned_users.add(buddy_email)
+                                        accountability_count += 1
                         
                     else:
                         # Create a new group for this user since existing group is full
