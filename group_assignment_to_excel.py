@@ -751,6 +751,110 @@ def generate_missing_users_analysis(user_tracking, original_count, solo_groups, 
     print(f"🔍 END OF MISSING USERS ANALYSIS")
     print(f"="*60)
 
+def check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups, column_mapping):
+    """Check for duplicate users across all group types and report them"""
+    
+    print(f"\n" + "="*60)
+    print(f"🔍 DUPLICATE USERS DETECTION")
+    print(f"="*60)
+    
+    all_users = set()
+    duplicate_users = set()
+    user_locations = {}  # Track where each user appears
+    
+    def get_value(row, key, default=''):
+        if column_mapping and key in column_mapping:
+            if isinstance(row, dict):
+                return row.get(column_mapping[key], default)
+            else:
+                return default
+        else:
+            return default
+    
+    # Check solo groups
+    for i, group in enumerate(solo_groups):
+        for member in group:
+            user_id = get_value(member, 'user_id', 'Unknown')
+            if user_id and str(user_id).strip() not in ['', 'nan', 'None']:
+                user_key = str(user_id).strip()
+                if user_key in all_users:
+                    duplicate_users.add(user_key)
+                    if user_key not in user_locations:
+                        user_locations[user_key] = []
+                    user_locations[user_key].append(f"Solo Group {i+1}")
+                else:
+                    all_users.add(user_key)
+                    user_locations[user_key] = [f"Solo Group {i+1}"]
+    
+    # Check regular groups
+    for group_name, members in grouped.items():
+        for member in members:
+            user_id = get_value(member, 'user_id', 'Unknown')
+            if user_id and str(user_id).strip() not in ['', 'nan', 'None']:
+                user_key = str(user_id).strip()
+                if user_key in all_users:
+                    duplicate_users.add(user_key)
+                    if user_key not in user_locations:
+                        user_locations[user_key] = []
+                    user_locations[user_key].append(f"Regular Group: {group_name}")
+                else:
+                    all_users.add(user_key)
+                    user_locations[user_key] = [f"Regular Group: {group_name}"]
+    
+    # Check requested groups
+    for i, group in enumerate(requested_groups):
+        for member in group:
+            user_id = get_value(member, 'user_id', 'Unknown')
+            if user_id and str(user_id).strip() not in ['', 'nan', 'None']:
+                user_key = str(user_id).strip()
+                if user_key in all_users:
+                    duplicate_users.add(user_key)
+                    if user_key not in user_locations:
+                        user_locations[user_key] = []
+                    user_locations[user_key].append(f"Requested Group {i+1}")
+                else:
+                    all_users.add(user_key)
+                    user_locations[user_key] = [f"Requested Group {i+1}"]
+    
+    # Check excluded users
+    for user in excluded_users:
+        user_id = get_value(user, 'user_id', 'Unknown')
+        if user_id and str(user_id).strip() not in ['', 'nan', 'None']:
+            user_key = str(user_id).strip()
+            if user_key in all_users:
+                duplicate_users.add(user_key)
+                if user_key not in user_locations:
+                    user_locations[user_key] = []
+                user_locations[user_key].append("Excluded Users")
+            else:
+                all_users.add(user_key)
+                user_locations[user_key] = ["Excluded Users"]
+    
+    # Report results
+    print(f"\n📊 DUPLICATE DETECTION RESULTS:")
+    print(f"  Total unique users in output: {len(all_users)}")
+    print(f"  Duplicate users found: {len(duplicate_users)}")
+    
+    if duplicate_users:
+        print(f"\n❌ DUPLICATE USERS DETECTED:")
+        print("-" * 60)
+        for user_id in sorted(duplicate_users, key=int):
+            locations = user_locations.get(user_id, [])
+            print(f"  User ID: {user_id}")
+            print(f"    Appears in: {', '.join(locations)}")
+            print()
+        
+        print(f"⚠️  WARNING: {len(duplicate_users)} users appear in multiple groups!")
+        print(f"   This indicates a logic error in the grouping process.")
+    else:
+        print(f"\n✅ NO DUPLICATE USERS FOUND!")
+        print(f"   All users appear in exactly one group type.")
+    
+    print(f"\n" + "="*60)
+    print(f"🔍 END OF DUPLICATE USERS DETECTION")
+    print(f"="*60)
+
+
 def group_participants(data, column_mapping):
     solo_groups = []
     grouped = defaultdict(list)
@@ -1508,6 +1612,9 @@ def group_participants(data, column_mapping):
     
     # Generate missing users analysis
     generate_missing_users_analysis(user_tracking, original_count, solo_groups, grouped, excluded_users, requested_groups, column_mapping)
+    
+    # Check for duplicates
+    check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups, column_mapping)
     
     # No merging of small groups - keep all groups as created
     return solo_groups, grouped, excluded_users, requested_groups
