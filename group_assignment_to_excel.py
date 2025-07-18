@@ -854,6 +854,205 @@ def check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups,
     print(f"🔍 END OF DUPLICATE USERS DETECTION")
     print(f"="*60)
 
+def merge_small_groups(grouped, column_mapping):
+    """
+    Merge small groups (less than 4 members) that start with 'Group*' based on geographic proximity.
+    Ensures all groups have a maximum of 5 members.
+    """
+    if not grouped:
+        return grouped
+    
+    # Helper function to get value safely
+    def get_value(row, key, default=''):
+        if column_mapping and key in column_mapping:
+            if isinstance(row, dict):
+                return row.get(column_mapping[key], default)
+            else:
+                return default
+        else:
+            # Fallback to old format (list indices)
+            if isinstance(row, list):
+                if key == 'user_id':
+                    return row[0] if len(row) > 0 else default
+                elif key == 'residing_ph':
+                    return row[8] if len(row) > 8 else default
+                elif key == 'country':
+                    return row[16] if len(row) > 16 else default
+                elif key == 'province':
+                    return row[17] if len(row) > 17 else default
+                elif key == 'city':
+                    return row[18] if len(row) > 18 else default
+                elif key == 'state':
+                    return row[19] if len(row) > 19 else default
+            return default
+    
+    # Helper function to get location key for proximity matching (more flexible)
+    def get_location_key(member):
+        residing_ph = str(get_value(member, 'residing_ph', '0')).strip().lower()
+        if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+            # Philippines: use province only (more flexible than exact city)
+            province = str(get_value(member, 'province', '')).strip().lower()
+            return f"PH_{province}"
+        else:
+            # International: use country and timezone region (more flexible than exact state)
+            country = str(get_value(member, 'country', '')).strip().lower()
+            state = str(get_value(member, 'state', '')).strip().lower()
+            timezone_region = get_timezone_region(country, state)
+            return f"INT_{country}_{timezone_region}"
+    
+    # Helper function to get gender key for compatibility
+    def get_gender_key(member):
+        gender_pref = str(get_value(member, 'gender_preference', '')).lower()
+        if gender_pref == 'same_gender':
+            sex = str(get_value(member, 'sex', '')).lower()
+            gender_identity = str(get_value(member, 'gender_identity', '')).upper()
+            if gender_identity == 'LGBTQ+':
+                return f"lgbtq+_{sex}"
+            else:
+                return sex
+        elif gender_pref == 'no_preference':
+            return 'no_preference'
+        else:
+            return 'other'
+    
+    # Separate small groups (less than 4 members) that start with "Group*"
+    small_groups = {}
+    other_groups = {}
+    
+    for group_name, members in grouped.items():
+        if group_name.startswith("Group ") and len(members) < 4:
+            small_groups[group_name] = members
+        else:
+            other_groups[group_name] = members
+    
+    if not small_groups:
+        return grouped
+    
+    print(f"🔍 Found {len(small_groups)} small groups to potentially merge")
+    
+    # Group small groups by location and gender compatibility
+    location_gender_groups = defaultdict(list)
+    
+    for group_name, members in small_groups.items():
+        if not members:
+            continue
+        
+        # Get location and gender info from first member
+        first_member = members[0]
+        location_key = get_location_key(first_member)
+        gender_key = get_gender_key(first_member)
+        
+        # Create a composite key for grouping
+        composite_key = f"{location_key}_{gender_key}"
+        location_gender_groups[composite_key].append((group_name, members))
+    
+    # If we still have groups with <4 members, try broader geographic matching
+    # Group by just gender preference (ignore location constraints)
+    if any(len(group_list) == 1 for group_list in location_gender_groups.values()):
+        print("🔄 Trying broader geographic matching for remaining small groups...")
+        
+        # Reset and try broader matching
+        location_gender_groups = defaultdict(list)
+        
+        for group_name, members in small_groups.items():
+            if not members:
+                continue
+            
+            first_member = members[0]
+            gender_key = get_gender_key(first_member)
+            
+            # Use only gender key for broader matching
+            location_gender_groups[gender_key].append((group_name, members))
+    
+    # Merge groups within each location-gender combination
+    merged_groups = {}
+    group_counter = 1
+    
+    for composite_key, group_list in location_gender_groups.items():
+        if len(group_list) == 1:
+            # Only one group in this location-gender combo, keep as is
+            group_name, members = group_list[0]
+            merged_groups[group_name] = members
+            continue
+        
+        # Multiple groups in same location-gender combo, try to merge
+        all_members = []
+        for _, members in group_list:
+            all_members.extend(members)
+        
+        # Create new groups of up to 5 members
+        i = 0
+        while i < len(all_members):
+            group_members = all_members[i:i+5]
+            
+            # Create new group name with location info
+            first_member = group_members[0]
+            location_key = get_location_key(first_member)
+            gender_key = get_gender_key(first_member)
+            
+            # Extract location info for display
+            if location_key.startswith("PH_"):
+                parts = location_key.split("_")
+                if len(parts) >= 2:
+                    province = parts[1].title()
+                    location_info = f"Province: {province}"
+                else:
+                    location_info = "Philippines"
+            else:
+                parts = location_key.split("_")
+                if len(parts) >= 3:
+                    country = parts[1].title()
+                    timezone_region = parts[2].title()
+                    location_info = f"Country: {country}, Timezone: {timezone_region}"
+                else:
+                    location_info = "International"
+            
+            new_group_name = f"Group {group_counter} ({gender_key}, {location_info})"
+            merged_groups[new_group_name] = group_members
+            group_counter += 1
+            i += 5
+    
+    # Final check: if any merged groups still have <4 members, combine them
+    final_small_groups = {}
+    final_regular_groups = {}
+    
+    for group_name, members in merged_groups.items():
+        if len(members) < 4:
+            final_small_groups[group_name] = members
+        else:
+            final_regular_groups[group_name] = members
+    
+    # If we still have small groups, combine them by gender preference only
+    if final_small_groups:
+        print("🔄 Final merge: combining remaining small groups by gender preference...")
+        
+        gender_groups = defaultdict(list)
+        for group_name, members in final_small_groups.items():
+            if not members:
+                continue
+            
+            first_member = members[0]
+            gender_key = get_gender_key(first_member)
+            gender_groups[gender_key].extend(members)
+        
+        # Create final groups from each gender category
+        for gender_key, all_members in gender_groups.items():
+            i = 0
+            while i < len(all_members):
+                group_members = all_members[i:i+5]
+                new_group_name = f"Group {group_counter} ({gender_key}, merged)"
+                final_regular_groups[new_group_name] = group_members
+                group_counter += 1
+                i += 5
+    
+    # Combine all groups
+    final_groups = {}
+    final_groups.update(other_groups)
+    final_groups.update(final_regular_groups)
+    
+    print(f"✅ Merged {len(small_groups)} small groups into {len(final_regular_groups)} groups")
+    
+    return final_groups
 
 def group_participants(data, column_mapping):
     solo_groups = []
@@ -1675,6 +1874,9 @@ def group_participants(data, column_mapping):
         if info['status'] == 'original':
             info['status'] = 'regular_grouping'
             info['reason'] = 'Regular grouping (non-solo, no special requests)'
+    
+    # Merge small groups based on geographic proximity
+    grouped = merge_small_groups(grouped, column_mapping)
     
     # Generate diagnostic report
     generate_diagnostic_report(user_tracking, original_count, solo_groups, grouped, excluded_users, requested_groups, column_mapping)
