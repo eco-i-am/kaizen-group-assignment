@@ -5,7 +5,7 @@ from openpyxl.styles import PatternFill, Font
 import re
 
 # File paths - Updated to use merged Excel file
-INPUT_FILE = 'merged_users_grouping_preferences_20250718_221747.xlsx'  # Change this to your merged file
+INPUT_FILE = 'merged_users_grouping_preferences_20250719_133755.xlsx'  # Change this to your merged file
 OUTPUT_FILE = 'grouped_participants.xlsx'
 
 def create_email_mapping(data, column_mapping):
@@ -1294,68 +1294,107 @@ def group_participants(data, column_mapping):
         return component
     
     def split_large_component_by_direct_connections(connected_emails, max_group_size=7):
-        """Split large connected components into smaller groups prioritizing direct connections"""
+        """Split large connected components into smaller groups prioritizing team names"""
         if len(connected_emails) <= max_group_size:
             return [list(connected_emails)]
         
-        # Create a list of users with their direct connections
-        users_with_direct_connections = []
+        # Create a list of users with their team names
+        users_with_info = []
         for email in connected_emails:
             if email in email_to_user:
                 user = email_to_user[email]
-                direct_buddies = set()
                 
-                # Get direct accountability buddies for this user
-                accountability_buddies = get_value(user, 'accountability_buddies', '')
-                if accountability_buddies:
-                    direct_emails = extract_emails_from_accountability_buddies(accountability_buddies, email_mapping)
-                    # Only include emails that are in our connected component
-                    direct_buddies = {email for email in direct_emails if email in connected_emails}
+                # Get team name
+                team_name = get_value(user, 'temporary_team_name', '')
+                team_name = str(team_name).strip() if team_name else ''
                 
-                users_with_direct_connections.append({
+                users_with_info.append({
                     'email': email,
                     'user': user,
-                    'direct_buddies': direct_buddies,
-                    'buddy_count': len(direct_buddies)
+                    'team_name': team_name
                 })
         
-        # Sort by number of direct connections (descending) to prioritize users with more connections
-        users_with_direct_connections.sort(key=lambda x: x['buddy_count'], reverse=True)
-        
-        # Create groups starting with users who have the most direct connections
-        groups = []
+        # Group users by team name similarity
+        team_groups = {}
         assigned_emails = set()
         
-        for user_info in users_with_direct_connections:
+        for user_info in users_with_info:
             email = user_info['email']
-            user = user_info['user']
-            direct_buddies = user_info['direct_buddies']
+            team_name = user_info['team_name']
             
-            # Skip if already assigned
             if email in assigned_emails:
                 continue
             
-            # Start a new group with this user
-            current_group = [email]
+            # Find or create a team group for this user
+            team_key = None
+            for existing_team in team_groups:
+                if check_team_name_similarity(team_name, existing_team):
+                    team_key = existing_team
+                    break
+            
+            if team_key is None:
+                team_key = team_name
+            
+            if team_key not in team_groups:
+                team_groups[team_key] = []
+            
+            team_groups[team_key].append(email)
             assigned_emails.add(email)
-            
-            # Add direct buddies to this group (prioritizing direct connections)
-            for buddy_email in direct_buddies:
-                if buddy_email not in assigned_emails and len(current_group) < max_group_size:
-                    current_group.append(buddy_email)
-                    assigned_emails.add(buddy_email)
-            
-            # If group is still small, add other unassigned users from the component
-            if len(current_group) < max_group_size:
-                for other_user_info in users_with_direct_connections:
-                    other_email = other_user_info['email']
-                    if other_email not in assigned_emails and len(current_group) < max_group_size:
-                        current_group.append(other_email)
-                        assigned_emails.add(other_email)
-            
-            groups.append(current_group)
         
-        return groups
+        # Create final groups from team groups
+        final_groups = []
+        for team_name, team_emails in team_groups.items():
+            if len(team_emails) <= max_group_size:
+                # Team fits in one group
+                final_groups.append(team_emails)
+            else:
+                # Split large team into multiple groups
+                for i in range(0, len(team_emails), max_group_size):
+                    group = team_emails[i:i + max_group_size]
+                    final_groups.append(group)
+        
+        return final_groups
+    
+    def check_team_name_similarity(team1, team2):
+        """Check if two team names are similar enough to group together"""
+        if not team1 or not team2:
+            return False
+        
+        # Normalize team names
+        team1_norm = str(team1).lower().strip()
+        team2_norm = str(team2).lower().strip()
+        
+        # Exact match
+        if team1_norm == team2_norm:
+            return True
+        
+        # Check for common words
+        team1_words = set(team1_norm.split())
+        team2_words = set(team2_norm.split())
+        
+        # If they share at least 50% of words, consider them similar
+        if team1_words and team2_words:
+            common_words = team1_words.intersection(team2_words)
+            min_words = min(len(team1_words), len(team2_words))
+            if min_words > 0:
+                similarity_ratio = len(common_words) / min_words
+                return similarity_ratio >= 0.5
+        
+        # Check for partial matches (one team name contains the other)
+        if team1_norm in team2_norm or team2_norm in team1_norm:
+            return True
+        
+        # Check for common patterns (e.g., "Team X" vs "X Team")
+        team1_clean = team1_norm.replace('team', '').replace('group', '').strip()
+        team2_clean = team2_norm.replace('team', '').replace('group', '').strip()
+        
+        if team1_clean and team2_clean:
+            if team1_clean == team2_clean:
+                return True
+            if team1_clean in team2_clean or team2_clean in team1_clean:
+                return True
+        
+        return False
     
     # Alternative approach: ensure all referenced users are included
     def ensure_referenced_users_included():
