@@ -42,14 +42,14 @@ def format_location_display(member, column_mapping):
         else:
             return member.get(column_mapping.get('city'), '')
 
-def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_users=None, requested_groups=None):
+def create_download_buttons(solo_groups, grouped, column_mapping=None, excluded_users=None, requested_groups=None, combined_group_info=None):
     """Create download buttons for Excel and CSV files"""
     col1, col2 = st.columns(2)
     
     with col1:
         # Create Excel file
         output_buffer = io.BytesIO()
-        save_to_excel(solo_groups, grouped, output_buffer, column_mapping, excluded_users, requested_groups)
+        save_to_excel(solo_groups, grouped, output_buffer, column_mapping, excluded_users, requested_groups, combined_group_info)
         output_buffer.seek(0)
         
         st.download_button(
@@ -566,13 +566,14 @@ def show_grouping_page():
                     data_list = data.values.tolist()
                 
                 # Call the grouping function
-                solo_groups, grouped, excluded_users, requested_groups = group_participants(data_list, column_mapping)
+                solo_groups, grouped, excluded_users, requested_groups, combined_group_info = group_participants(data_list, column_mapping)
                 
                 # Store results in session state
                 st.session_state.solo_groups = solo_groups
                 st.session_state.grouped = grouped
                 st.session_state.excluded_users = excluded_users
                 st.session_state.requested_groups = requested_groups
+                st.session_state.combined_group_info = combined_group_info
                 st.session_state.column_mapping = column_mapping
                 
                 # Display results
@@ -634,7 +635,7 @@ def show_grouping_page():
                 st.session_state.grouped = grouped
                 st.session_state.column_mapping = column_mapping
                 
-                create_download_buttons(solo_groups, grouped, column_mapping, excluded_users, requested_groups)
+                create_download_buttons(solo_groups, grouped, column_mapping, excluded_users, requested_groups, combined_group_info)
             
             except Exception as e:
                 st.error(f"Error creating groups: {str(e)}")

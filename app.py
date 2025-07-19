@@ -308,7 +308,7 @@ def show_grouping_page():
                     if st.button("📊 Download Excel", use_container_width=True):
                         # Create Excel file
                         output_buffer = io.BytesIO()
-                        save_to_excel(solo_groups, grouped, output_buffer)
+                        save_to_excel(solo_groups, grouped, output_buffer, column_mapping, excluded_users, requested_groups, combined_group_info)
                         output_buffer.seek(0)
                         
                         # Download button

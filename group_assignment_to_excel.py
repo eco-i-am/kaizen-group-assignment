@@ -1757,6 +1757,156 @@ def group_participants(data, column_mapping):
             # Multi-member group - keep as requested group
             multi_member_requested_groups.append(group)
     
+    # COMBINE SMALL REQUESTED GROUPS (2-3 members) INTO LARGER GROUPS (5-6 members)
+    # Prioritize gender preference, then location
+    small_groups = []  # Groups with 2-3 members
+    large_groups = []  # Groups with 4+ members
+    
+    for group in multi_member_requested_groups:
+        if len(group) <= 3:
+            small_groups.append(group)
+        else:
+            large_groups.append(group)
+    
+    # Helper function to get gender key for a user
+    def get_user_gender_key(user):
+        gender_pref = str(get_value(user, 'gender_preference', '')).lower()
+        if gender_pref == 'same_gender':
+            sex = str(get_value(user, 'sex', '')).lower()
+            gender_identity = str(get_value(user, 'gender_identity', '')).upper()
+            if gender_identity == 'LGBTQ+':
+                return f"lgbtq+_{sex}"
+            else:
+                return sex
+        elif gender_pref == 'no_preference':
+            return 'no_preference'
+        else:
+            return 'other'
+    
+    # Helper function to get location key for a user
+    def get_user_location_key(user):
+        ph_val = str(get_value(user, 'residing_ph', '0')).strip().lower()
+        if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+            province = get_value(user, 'province', 'Unknown Province')
+            city = get_value(user, 'city', 'Unknown City')
+            return f"PH_{province}_{city}"
+        else:
+            country = get_value(user, 'country', 'Unknown Country')
+            state = get_value(user, 'state', 'Unknown State')
+            return f"INT_{country}_{state}"
+    
+    # Combine small groups by gender preference first, then location
+    combined_groups = []
+    used_groups = set()
+    
+    for i, group1 in enumerate(small_groups):
+        if i in used_groups:
+            continue
+            
+        # Get gender and location info for this group
+        group1_gender = get_user_gender_key(group1[0])
+        group1_location = get_user_location_key(group1[0])
+        group1_members = group1.copy()
+        combined_size = len(group1_members)
+        used_groups.add(i)
+        
+        # Try to find compatible groups to combine with
+        for j, group2 in enumerate(small_groups):
+            if j in used_groups or j == i:
+                continue
+                
+            # Check if groups can be combined (total size <= 6)
+            if combined_size + len(group2) <= 6:
+                # Check gender compatibility
+                group2_gender = get_user_gender_key(group2[0])
+                if group1_gender == group2_gender:
+                    # Check location compatibility
+                    group2_location = get_user_location_key(group2[0])
+                    if group1_location == group2_location:
+                        # Perfect match - same gender and location
+                        group1_members.extend(group2)
+                        combined_size += len(group2)
+                        used_groups.add(j)
+                        break
+        
+        # If we still have space and no perfect match, try location-only match
+        if combined_size < 6:
+            for j, group2 in enumerate(small_groups):
+                if j in used_groups or j == i:
+                    continue
+                    
+                if combined_size + len(group2) <= 6:
+                    group2_gender = get_user_gender_key(group2[0])
+                    group2_location = get_user_location_key(group2[0])
+                    
+                    # Same gender but different location
+                    if group1_gender == group2_gender and group1_location != group2_location:
+                        group1_members.extend(group2)
+                        combined_size += len(group2)
+                        used_groups.add(j)
+                        break
+        
+        # If we still have space, try any compatible gender
+        if combined_size < 6:
+            for j, group2 in enumerate(small_groups):
+                if j in used_groups or j == i:
+                    continue
+                    
+                if combined_size + len(group2) <= 6:
+                    group2_gender = get_user_gender_key(group2[0])
+                    
+                    # Same gender preference
+                    if group1_gender == group2_gender:
+                        group1_members.extend(group2)
+                        combined_size += len(group2)
+                        used_groups.add(j)
+                        break
+        
+        # Create the combined group with indicator
+        if len(group1_members) > len(group1):
+            # This is a combined group - add indicator
+            original_groups = [group1]
+            for j, group2 in enumerate(small_groups):
+                if j in used_groups and j != i:
+                    # Find which groups were combined
+                    for k, other_group in enumerate(small_groups):
+                        if k == j and any(member in group1_members for member in other_group):
+                            original_groups.append(other_group)
+                            break
+            
+            # Create combined group with indicator
+            combined_group = {
+                'members': group1_members,
+                'is_combined': True,
+                'original_groups': original_groups,
+                'combined_info': f"Combined from {len(original_groups)} small groups"
+            }
+            combined_groups.append(combined_group)
+        else:
+            # No combination happened - keep as is
+            combined_groups.append({
+                'members': group1_members,
+                'is_combined': False,
+                'original_groups': [group1],
+                'combined_info': None
+            })
+    
+    # Add any remaining small groups that weren't combined
+    for i, group in enumerate(small_groups):
+        if i not in used_groups:
+            combined_groups.append({
+                'members': group,
+                'is_combined': False,
+                'original_groups': [group],
+                'combined_info': None
+            })
+    
+    # Update multi_member_requested_groups with combined groups
+    multi_member_requested_groups = large_groups + [group['members'] for group in combined_groups]
+    
+    # Store combined group info for later use in Excel output
+    combined_group_info = {i: group for i, group in enumerate(combined_groups) if group['is_combined']}
+    
     # 2. Handle Solo participants (from remaining data)
     solo_count = 0
     # Remove accountability participants and already assigned users from data for solo processing
@@ -2130,9 +2280,9 @@ def group_participants(data, column_mapping):
     check_for_duplicates(solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
     
     # Return the updated groups
-    return solo_groups, grouped, excluded_users, multi_member_requested_groups
+    return solo_groups, grouped, excluded_users, multi_member_requested_groups, combined_group_info
 
-def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None, requested_groups=None):
+def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None, requested_groups=None, combined_group_info=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "Grouped Members"
@@ -2180,9 +2330,37 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 for member in group
             )
             
+            # Check if this is a combined group
+            is_combined_group = False
+            combined_info = ""
+            if combined_group_info:
+                # Get emails of current group members for comparison
+                current_group_emails = set()
+                for member in group:
+                    email = member.get(column_mapping.get('email'), '')
+                    if email and '@' in email:
+                        current_group_emails.add(email.lower().strip())
+                
+                for group_info in combined_group_info.values():
+                    # Get emails of the combined group members
+                    combined_group_emails = set()
+                    for member in group_info['members']:
+                        email = member.get(column_mapping.get('email'), '')
+                        if email and '@' in email:
+                            combined_group_emails.add(email.lower().strip())
+                    
+                    # Compare email sets
+                    if current_group_emails == combined_group_emails:
+                        is_combined_group = group_info['is_combined']
+                        combined_info = group_info['combined_info']
+                        break
+            
             if all_same_team and all_no_accountability and team_name:
                 # This is a team group
-                row = [f"Team Group {idx} - {team_name} ({len(group)} members)"]
+                group_name = f"Team Group {idx} - {team_name} ({len(group)} members)"
+                if is_combined_group and combined_info:
+                    group_name += f" - {combined_info}"
+                row = [group_name]
             else:
                 # This is an accountability buddy group
                 # Check for missing buddies
@@ -2208,7 +2386,10 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                         if len(missing_buddies) > 3:
                             missing_buddies_info += f" (+{len(missing_buddies)-3} more)"
                 
-                row = [f"Requested Group {idx} ({len(group)} members){missing_buddies_info}"]
+                group_name = f"Requested Group {idx} ({len(group)} members){missing_buddies_info}"
+                if is_combined_group and combined_info:
+                    group_name += f" - {combined_info}"
+                row = [group_name]
             
             # Add user data for each member (up to 7)
             for i in range(7):
@@ -2488,12 +2669,12 @@ def main():
     print(f"\n🚀 Starting group assignment process...")
     
     # Group participants
-    solo_groups, grouped, excluded_users, requested_groups = group_participants(data, column_mapping)
+    solo_groups, grouped, excluded_users, requested_groups, combined_group_info = group_participants(data, column_mapping)
     
     print(f"\n💾 Saving results to Excel...")
     
     # Save to Excel
-    save_to_excel(solo_groups, grouped, OUTPUT_FILE, column_mapping, excluded_users, requested_groups)
+    save_to_excel(solo_groups, grouped, OUTPUT_FILE, column_mapping, excluded_users, requested_groups, combined_group_info)
     
     print(f"\n✅ Group assignment completed successfully!")
     print(f"📁 Results saved to: {OUTPUT_FILE}")
