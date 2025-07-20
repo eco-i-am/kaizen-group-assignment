@@ -1757,155 +1757,8 @@ def group_participants(data, column_mapping):
             # Multi-member group - keep as requested group
             multi_member_requested_groups.append(group)
     
-    # COMBINE SMALL REQUESTED GROUPS (2-3 members) INTO LARGER GROUPS (5-6 members)
-    # Prioritize gender preference, then location
-    small_groups = []  # Groups with 2-3 members
-    large_groups = []  # Groups with 4+ members
-    
-    for group in multi_member_requested_groups:
-        if len(group) <= 3:
-            small_groups.append(group)
-        else:
-            large_groups.append(group)
-    
-    # Helper function to get gender key for a user
-    def get_user_gender_key(user):
-        gender_pref = str(get_value(user, 'gender_preference', '')).lower()
-        if gender_pref == 'same_gender':
-            sex = str(get_value(user, 'sex', '')).lower()
-            gender_identity = str(get_value(user, 'gender_identity', '')).upper()
-            if gender_identity == 'LGBTQ+':
-                return f"lgbtq+_{sex}"
-            else:
-                return sex
-        elif gender_pref == 'no_preference':
-            return 'no_preference'
-        else:
-            return 'other'
-    
-    # Helper function to get location key for a user
-    def get_user_location_key(user):
-        ph_val = str(get_value(user, 'residing_ph', '0')).strip().lower()
-        if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
-            province = get_value(user, 'province', 'Unknown Province')
-            city = get_value(user, 'city', 'Unknown City')
-            return f"PH_{province}_{city}"
-        else:
-            country = get_value(user, 'country', 'Unknown Country')
-            state = get_value(user, 'state', 'Unknown State')
-            return f"INT_{country}_{state}"
-    
-    # Combine small groups by gender preference first, then location
-    combined_groups = []
-    used_groups = set()
-    
-    for i, group1 in enumerate(small_groups):
-        if i in used_groups:
-            continue
-            
-        # Get gender and location info for this group
-        group1_gender = get_user_gender_key(group1[0])
-        group1_location = get_user_location_key(group1[0])
-        group1_members = group1.copy()
-        combined_size = len(group1_members)
-        used_groups.add(i)
-        
-        # Try to find compatible groups to combine with
-        for j, group2 in enumerate(small_groups):
-            if j in used_groups or j == i:
-                continue
-                
-            # Check if groups can be combined (total size <= 6)
-            if combined_size + len(group2) <= 6:
-                # Check gender compatibility
-                group2_gender = get_user_gender_key(group2[0])
-                if group1_gender == group2_gender:
-                    # Check location compatibility
-                    group2_location = get_user_location_key(group2[0])
-                    if group1_location == group2_location:
-                        # Perfect match - same gender and location
-                        group1_members.extend(group2)
-                        combined_size += len(group2)
-                        used_groups.add(j)
-                        break
-        
-        # If we still have space and no perfect match, try location-only match
-        if combined_size < 6:
-            for j, group2 in enumerate(small_groups):
-                if j in used_groups or j == i:
-                    continue
-                    
-                if combined_size + len(group2) <= 6:
-                    group2_gender = get_user_gender_key(group2[0])
-                    group2_location = get_user_location_key(group2[0])
-                    
-                    # Same gender but different location
-                    if group1_gender == group2_gender and group1_location != group2_location:
-                        group1_members.extend(group2)
-                        combined_size += len(group2)
-                        used_groups.add(j)
-                        break
-        
-        # If we still have space, try any compatible gender
-        if combined_size < 6:
-            for j, group2 in enumerate(small_groups):
-                if j in used_groups or j == i:
-                    continue
-                    
-                if combined_size + len(group2) <= 6:
-                    group2_gender = get_user_gender_key(group2[0])
-                    
-                    # Same gender preference
-                    if group1_gender == group2_gender:
-                        group1_members.extend(group2)
-                        combined_size += len(group2)
-                        used_groups.add(j)
-                        break
-        
-        # Create the combined group with indicator
-        if len(group1_members) > len(group1):
-            # This is a combined group - add indicator
-            original_groups = [group1]
-            for j, group2 in enumerate(small_groups):
-                if j in used_groups and j != i:
-                    # Find which groups were combined
-                    for k, other_group in enumerate(small_groups):
-                        if k == j and any(member in group1_members for member in other_group):
-                            original_groups.append(other_group)
-                            break
-            
-            # Create combined group with indicator
-            combined_group = {
-                'members': group1_members,
-                'is_combined': True,
-                'original_groups': original_groups,
-                'combined_info': f"Combined from {len(original_groups)} small groups"
-            }
-            combined_groups.append(combined_group)
-        else:
-            # No combination happened - keep as is
-            combined_groups.append({
-                'members': group1_members,
-                'is_combined': False,
-                'original_groups': [group1],
-                'combined_info': None
-            })
-    
-    # Add any remaining small groups that weren't combined
-    for i, group in enumerate(small_groups):
-        if i not in used_groups:
-            combined_groups.append({
-                'members': group,
-                'is_combined': False,
-                'original_groups': [group],
-                'combined_info': None
-            })
-    
-    # Update multi_member_requested_groups with combined groups
-    multi_member_requested_groups = large_groups + [group['members'] for group in combined_groups]
-    
-    # Store combined group info for later use in Excel output
-    combined_group_info = {i: group for i, group in enumerate(combined_groups) if group['is_combined']}
+    # Keep original requested groups without combining
+    # No combining logic - keep groups as they were originally formed
     
     # 2. Handle Solo participants (from remaining data)
     solo_count = 0
@@ -1939,8 +1792,6 @@ def group_participants(data, column_mapping):
                 user_tracking[user_id_str]['reason'] = 'go_solo = True'
     
     # 3. Handle non-solo participants (from remaining data)
-    
-    # 3. Handle non-solo participants (from remaining data)
     non_solo = [row for row in remaining_data if str(get_value(row, 'go_solo', '0')).strip().lower() not in ['1', '1.0', 'true']]
     
     # Group by gender preference
@@ -1967,8 +1818,6 @@ def group_participants(data, column_mapping):
             gender_key = 'other'
         
         gender_pref_groups[gender_key].append(row)
-    
-    # Now, within each gender group, group by location with hierarchical approach
     
     # Now, within each gender group, group by location with hierarchical approach
     for gender_key, rows in gender_pref_groups.items():
@@ -2097,175 +1946,127 @@ def group_participants(data, column_mapping):
                             cities_in_group = set()
                             for member in group:
                                 city = get_value(member, 'city', 'Unknown City')
-                                cities_in_group.add(city.strip().lower() if isinstance(city, str) else str(city).strip().lower())
+                                cities_in_group.add(city)
+                            
                             if len(cities_in_group) == 1:
-                                city_name = get_value(group[0], 'city', 'Unknown City')
+                                # All from same city
+                                city_name = list(cities_in_group)[0]
                                 location_info = f"Province: {province}, City: {city_name}"
                             else:
-                                location_info = f"Province: {province} (mixed cities)"
+                                # Mixed cities
+                                location_info = f"Province: {province}, Mixed Cities"
+                            
                             grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
                             # Mark all members as assigned
                             for member in group:
                                 member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
                                 assigned_users.add(member_email)
                             group_counter += 1
-            # --- END NEW LOGIC ---
         
-        # Group International participants by Country -> State hierarchy with timezone-based small group merging
-        country_groups = defaultdict(list)
-        for r in non_ph_rows:
-            country = get_value(r, 'country', 'Unknown Country')
-            country_groups[country].append(r)
-        
-        # First pass: create complete groups (5 members) from each country/state
-        remaining_international = []
-        
-        for country, country_members in country_groups.items():
-            # Further group by state within each country
-            state_groups = defaultdict(list)
-            for r in country_members:
-                state = get_value(r, 'state', 'Unknown State')
-                state_groups[state].append(r)
+        # Handle international participants
+        if non_ph_rows:
+            # Group international participants by country -> state hierarchy
+            country_groups = defaultdict(list)
+            for r in non_ph_rows:
+                country = get_value(r, 'country', 'Unknown Country')
+                # Normalize country name
+                country_norm = country.strip().lower() if isinstance(country, str) else str(country).strip().lower()
+                country_groups[country_norm].append(r)
             
-            for state, members in state_groups.items():
-                
-                # Create complete groups of 5 from this state
-                i = 0
-                while i + 5 <= len(members):
-                    group_members = members[i:i+5]
-                    location_info = f"Country: {country}, State: {state}"
-                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-                    # Mark all members as assigned
-                    for member in group_members:
-                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                        assigned_users.add(member_email)
-                    group_counter += 1
-                    i += 5
-                
-                # Keep remaining members for timezone-based grouping
-                if i < len(members):
-                    remaining_members = members[i:]
-                    remaining_international.extend(remaining_members)
-        
-        # Second pass: combine remaining members by timezone regions
-        if remaining_international:
-            # Sort remaining international members by GMT offset
-            remaining_international.sort(key=lambda m: get_gmt_offset_value(get_timezone_region(get_value(m, 'country', 'Unknown Country'), get_value(m, 'state', 'Unknown State'))))
+            # Sort countries alphabetically
+            sorted_countries = sorted(country_groups.items())
             
-            # Group remaining members by timezone region
-            timezone_groups = defaultdict(list)
-            for member in remaining_international:
-                country = get_value(member, 'country', 'Unknown Country')
-                state = get_value(member, 'state', 'Unknown State')
-                timezone_region = get_timezone_region(country, state)
-                timezone_groups[timezone_region].append(member)
-            
-            # Sort timezone regions by GMT offset before processing
-            sorted_timezone_regions = sorted(timezone_groups.keys(), key=get_gmt_offset_value)
-            
-            # Process each timezone region
-            for timezone_region in sorted_timezone_regions:
-                members = timezone_groups[timezone_region]
+            for country_norm, country_members in sorted_countries:
+                # Use the original country name for display
+                country = get_value(country_members[0], 'country', 'Unknown Country')
+                # Further group by state within each country
+                state_groups = defaultdict(list)
+                for r in country_members:
+                    state = get_value(r, 'state', 'Unknown State')
+                    # Normalize state name
+                    state_norm = state.strip().lower() if isinstance(state, str) else str(state).strip().lower()
+                    state_groups[state_norm].append(r)
                 
-                # Create groups of up to 5 from this timezone region
-                i = 0
-                while i < len(members):
-                    group_members = members[i:i+5]
-                    timezone_label = get_timezone_label(timezone_region)
-                    location_info = f"Timezone: {timezone_label}"
-                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-                    # Mark all members as assigned
-                    for member in group_members:
-                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                        assigned_users.add(member_email)
-                    group_counter += 1
-                    i += 5
-    
-    # Update remaining users as regular grouping
-    for user_id, info in user_tracking.items():
-        if info['status'] == 'original':
-            info['status'] = 'regular_grouping'
-            info['reason'] = 'Regular grouping (non-solo, no special requests)'
-    
-    # DEBUG: Check for users not in any groups
-    print(f"\n🔍 DEBUG: Checking for missing users...")
-    print(f"Total users in tracking: {len(user_tracking)}")
-    print(f"Users in assigned_users: {len(assigned_users)}")
-    
-    # Find users not in assigned_users
-    unassigned_users = []
-    for user_id, info in user_tracking.items():
-        user_email = info.get('email', '')
-        if user_email and user_email not in assigned_users:
-            unassigned_users.append((user_id, user_email, info['status']))
-    
-    print(f"Users NOT in assigned_users: {len(unassigned_users)}")
-    if unassigned_users:
-        print("Unassigned users:")
-        for user_id, email, status in unassigned_users[:10]:  # Show first 10
-            print(f"  - {user_id}: {email} (status: {status})")
-        if len(unassigned_users) > 10:
-            print(f"  ... and {len(unassigned_users) - 10} more")
-    
-    # Check if any users are in remaining_data but not processed
-    remaining_emails = set()
-    for row in remaining_data:
-        email = normalize_email(get_value(row, 'email', ''), email_mapping)
-        if email:
-            remaining_emails.add(email)
-    
-    print(f"Users in remaining_data: {len(remaining_emails)}")
-    
-    # Find users in remaining_data but not in assigned_users
-    unprocessed_remaining = remaining_emails - assigned_users
-    print(f"Users in remaining_data but not assigned: {len(unprocessed_remaining)}")
-    if unprocessed_remaining:
-        print("Unprocessed remaining users:")
-        for email in list(unprocessed_remaining)[:10]:
-            print(f"  - {email}")
-        if len(unprocessed_remaining) > 10:
-            print(f"  ... and {len(unprocessed_remaining) - 10} more")
-    
-        # FIX: Create groups for unprocessed users
-        print(f"\n🔧 FIX: Creating groups for {len(unprocessed_remaining)} unprocessed users...")
-        
-        # Group unprocessed users by gender preference
-        unprocessed_by_gender = defaultdict(list)
-        for row in remaining_data:
-            email = normalize_email(get_value(row, 'email', ''), email_mapping)
-            if email in unprocessed_remaining:
-                gender_pref = str(get_value(row, 'gender_preference', '')).lower()
-                if gender_pref == 'same_gender':
-                    sex = str(get_value(row, 'sex', '')).lower()
-                    gender_identity = str(get_value(row, 'gender_identity', '')).upper()
-                    if gender_identity == 'LGBTQ+':
-                        gender_key = f"lgbtq+_{sex}"
-                    else:
-                        gender_key = sex
-                elif gender_pref == 'no_preference':
-                    gender_key = 'no_preference'
-                else:
-                    gender_key = 'other'
+                # Sort states alphabetically
+                sorted_state_names = sorted(state_groups.keys())
                 
-                unprocessed_by_gender[gender_key].append(row)
-        
-        # Create groups for unprocessed users
-        for gender_key, users in unprocessed_by_gender.items():
-            i = 0
-            while i < len(users):
-                group_members = users[i:i+5]
-                location_info = "Unprocessed users"
-                grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-                
-                # Mark all members as assigned
-                for member in group_members:
-                    member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                    assigned_users.add(member_email)
-                
-                group_counter += 1
-                i += 5
-        
-        print(f"✅ Created groups for all unprocessed users")
+                # Create groups from each state
+                for state_norm in sorted_state_names:
+                    members = state_groups[state_norm]
+                    # Use the original state name for display
+                    state = get_value(members[0], 'state', 'Unknown State')
+                    
+                    # Create complete groups of 5 from this state
+                    i = 0
+                    while i + 5 <= len(members):
+                        group_members = members[i:i+5]
+                        location_info = f"Country: {country}, State: {state}"
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                        # Mark all members as assigned
+                        for member in group_members:
+                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                            assigned_users.add(member_email)
+                        group_counter += 1
+                        i += 5
+                    
+                    # Handle remaining members from this state
+                    if i < len(members):
+                        remaining_members = members[i:]
+                        if len(remaining_members) >= 5:
+                            # Can form a complete group
+                            group_members = remaining_members[:5]
+                            location_info = f"Country: {country}, State: {state}"
+                            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                            # Mark all members as assigned
+                            for member in group_members:
+                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                                assigned_users.add(member_email)
+                            group_counter += 1
+                            remaining_members = remaining_members[5:]
+                        
+                        # Add remaining members to a mixed group if any
+                        if remaining_members:
+                            # Check if we can combine with other remaining members from other states/countries
+                            all_remaining_international = []
+                            for other_country_norm, other_country_members in country_groups.items():
+                                if other_country_norm != country_norm:
+                                    for other_state_norm, other_state_members in state_groups.items():
+                                        if other_state_norm != state_norm:
+                                            # Get remaining members from other states
+                                            other_remaining = []
+                                            for other_member in other_state_members:
+                                                other_email = normalize_email(get_value(other_member, 'email', ''), email_mapping)
+                                                if other_email not in assigned_users:
+                                                    other_remaining.append(other_member)
+                                            all_remaining_international.extend(other_remaining)
+                            
+                            # Combine with other remaining international members
+                            combined_remaining = remaining_members + all_remaining_international
+                            
+                            if combined_remaining:
+                                # Create groups from combined remaining
+                                i = 0
+                                while i + 5 <= len(combined_remaining):
+                                    group_members = combined_remaining[i:i+5]
+                                    location_info = f"International Mixed"
+                                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                                    # Mark all members as assigned
+                                    for member in group_members:
+                                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                                        assigned_users.add(member_email)
+                                    group_counter += 1
+                                    i += 5
+                                
+                                # Handle final remaining (less than 5)
+                                if i < len(combined_remaining):
+                                    final_group = combined_remaining[i:]
+                                    location_info = f"International Mixed"
+                                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = final_group
+                                    # Mark all members as assigned
+                                    for member in final_group:
+                                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                                        assigned_users.add(member_email)
+                                    group_counter += 1
     
     # Merge small groups based on geographic proximity
     grouped = merge_small_groups(grouped, column_mapping)
@@ -2279,8 +2080,8 @@ def group_participants(data, column_mapping):
     # Check for duplicates
     check_for_duplicates(solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
     
-    # Return the updated groups
-    return solo_groups, grouped, excluded_users, multi_member_requested_groups, combined_group_info
+    # Return the updated groups - use original requested groups without combining
+    return solo_groups, grouped, excluded_users, multi_member_requested_groups, {}
 
 def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None, requested_groups=None, combined_group_info=None):
     wb = Workbook()
