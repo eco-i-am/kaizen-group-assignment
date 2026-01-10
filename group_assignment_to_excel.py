@@ -1,21 +1,102 @@
+"""
+GROUP ASSIGNMENT TO EXCEL - Kaizen Participant Grouping System
+
+This script processes merged participant data from Lazy Lifter API and creates
+optimized group assignments based on accountability and geographic criteria:
+
+1. ACCOUNTABILITY BUDDIES (Highest Priority)
+   - Users who explicitly requested to be grouped with specific buddies
+   - Uses graph-based clustering to find connected components
+   - Groups users who reference each other as accountability partners
+
+2. SOLO PARTICIPANTS (User Choice)
+   - Users who prefer to work individually
+   - Placed in single-member groups
+
+3. REGULAR GROUPING (Algorithm-Based)
+   - Hierarchical grouping by gender preference, then geography
+   - Philippines: Province → City → Same-city groups
+   - International: Country → State → Timezone regions
+   - Optimizes group sizes (3-5 members)
+
+4. SMALL GROUP MERGING (Optimization)
+   - Merges groups <4 members based on geographic proximity
+   - Ensures no group exceeds 5 members
+
+FEATURES:
+- Dynamic column mapping (handles various column name variations)
+- Email normalization and alias mapping
+- Geographic intelligence (timezones, Philippine regions)
+- Gender identity respect (LGBTQ+ handling)
+- Comprehensive diagnostic reporting
+- Excel output with color coding and formatting
+
+INPUT: Merged Excel file with user data and grouping preferences
+OUTPUT: Excel file with organized groups, solos, and excluded users
+"""
+
 import pandas as pd
+import numpy as np
 from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font
 import re
 
-# File paths - Updated to use merged Excel file
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def safe_get_value(data_dict, key, default=''):
+    """
+    Safely retrieve a value from dictionary, handling NaN and None values.
+
+    Args:
+        data_dict: Dictionary containing participant data
+        key: Column key to retrieve
+        default: Default value if key not found or value is invalid
+
+    Returns:
+        str: Cleaned string value, or default if invalid
+    """
+    if not data_dict or key not in data_dict:
+        return default
+    value = data_dict[key]
+    if pd.isna(value) or value is None:
+        return default
+    return str(value).strip()
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# File paths - Update INPUT_FILE to point to your merged data file
 INPUT_FILE = 'merged_users_grouping_preferences_20250719_133755.xlsx'  # Change this to your merged file
 OUTPUT_FILE = 'grouped_participants.xlsx'
 
+# ============================================================================
+# EMAIL PROCESSING FUNCTIONS
+# ============================================================================
+
 def create_email_mapping(data, column_mapping):
-    """Create minimal email mapping for known cases only"""
+    """
+    Create email normalization mapping for known email aliases.
+
+    Currently handles specific known cases where users have multiple email addresses
+    or where accountability buddy references use different email formats.
+
+    Args:
+        data: Participant data (for future expansion)
+        column_mapping: Column mappings (for future expansion)
+
+    Returns:
+        dict: Email mapping dictionary {old_email: canonical_email}
+    """
     email_mapping = {}
-    
-    # Only map the specific case we know about: jaw.ybanez@yahoo.com -> yo21st@gmail.com
-    # This is for Jaw Ybañez who has yo21st@gmail.com but is referenced as jaw.ybanez@yahoo.com in accountability buddies
+
+    # Known email aliases - expand this as new cases are discovered
+    # jaw.ybanez@yahoo.com is referenced in buddies but actual email is yo21st@gmail.com
     email_mapping['jaw.ybanez@yahoo.com'] = 'yo21st@gmail.com'
-    
+
     return email_mapping
 
 def check_name_similarity(name1, name2):
@@ -45,7 +126,23 @@ def normalize_email(email, email_mapping):
     return email_mapping.get(email_lower, email_lower)
 
 def extract_emails_from_accountability_buddies(accountability_buddies, email_mapping):
-    """Extract emails from accountability_buddies field, handling different formats"""
+    """
+    Extract emails from accountability_buddies field, handling multiple formats:
+
+    SUPPORTED FORMATS:
+    - Dictionary: {'1': 'email1', '2': 'email2'}
+    - List with names: ['Name (email@domain.com)', 'Another Name (email2@domain.com)']
+    - List with emails: ['email1@domain.com', 'email2@domain.com']
+    - String representation of lists/dicts (JSON-like)
+    - Simple comma-separated strings
+
+    Args:
+        accountability_buddies: The accountability buddies data in any supported format
+        email_mapping: Dictionary for email normalization/alias mapping
+
+    Returns:
+        list: List of normalized email addresses
+    """
     if not accountability_buddies:
         return []
     
@@ -68,7 +165,21 @@ def extract_emails_from_accountability_buddies(accountability_buddies, email_map
         # Handle regular string format (list-like strings)
         # Remove brackets and quotes, split by comma
         cleaned = accountability_buddies.strip('[]').replace('"', '').replace("'", '')
-        emails = [normalize_email(email.strip(), email_mapping) for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+        emails = []
+        for email_item in cleaned.split(','):
+            email_item = email_item.strip()
+            if email_item:
+                # Check for "Name (email)" format
+                import re
+                email_match = re.search(r'\(([^)]+@[^)]+)\)', email_item)
+                if email_match:
+                    # Extract email from parentheses
+                    email = email_match.group(1).strip()
+                    if email and '@' in email:
+                        emails.append(normalize_email(email, email_mapping))
+                elif '@' in email_item:
+                    # Direct email format
+                    emails.append(normalize_email(email_item, email_mapping))
         return emails
     elif isinstance(accountability_buddies, dict):
         # Handle dictionary format with numbered keys like {'1': 'email1', '2': 'email2'}
@@ -78,17 +189,36 @@ def extract_emails_from_accountability_buddies(accountability_buddies, email_map
                 emails.append(normalize_email(str(value).strip(), email_mapping))
         return emails
     elif isinstance(accountability_buddies, list):
-        # Handle list format
+        # Handle list format - supports two formats:
+        # 1. "Name (email@domain.com)" - extract email from parentheses
+        # 2. "email@domain.com" - use email directly
         emails = []
         for item in accountability_buddies:
-            if item and '@' in str(item):
-                emails.append(normalize_email(str(item).strip(), email_mapping))
+            if item:
+                item_str = str(item).strip()
+
+                # Check for "Name (email)" format
+                import re
+                email_match = re.search(r'\(([^)]+@[^)]+)\)', item_str)
+                if email_match:
+                    # Extract email from parentheses
+                    email = email_match.group(1).strip()
+                    if email and '@' in email:
+                        emails.append(normalize_email(email, email_mapping))
+                elif '@' in item_str:
+                    # Direct email format
+                    emails.append(normalize_email(item_str, email_mapping))
         return emails
     else:
         return []
 
-# Column mapping for merged data (will be dynamically determined)
-# These are the expected column names in the merged data
+# ============================================================================
+# COLUMN MAPPING CONFIGURATION
+# ============================================================================
+
+# Dynamic column mapping - handles various column name variations
+# The script automatically detects which columns exist in the input data
+# Each key maps to possible column name variations
 EXPECTED_COLUMNS = {
     'user_id': ['user_id', 'id', 'userid', 'user id', 'id_y', 'id_x'],
     'name': ['name', 'full_name', 'fullname', 'first_name', 'last_name', 'firstName', 'lastName'],
@@ -106,31 +236,58 @@ EXPECTED_COLUMNS = {
     'accountability_buddies': ['accountability_buddies', 'accountabilityBuddies', 'accountability_buddies', 'buddies'],
     'has_accountability_buddies': ['has_accountability_buddies', 'hasAccountabilityBuddies', 'has_buddies'],
     'email': ['email', 'user_email', 'email_address', 'useremail', 'userEmail'],
-    'temporary_team_name': ['temporaryTeamName', 'temporary_team_name', 'temp_team_name', 'team_name'],
-    'previous_coach_name': ['previousCoachName', 'previous_coach_name', 'prev_coach_name', 'coach_name']
+    'previous_coach_name': ['previousCoachName', 'previous_coach_name', 'prev_coach_name', 'coach_name'],
+    'current_goal': ['currentGoal', 'current_goal', 'goal'],
+    'age_group': ['ageGroup', 'age_group', 'age']
 }
 
-# Helper for color coding
-GENDER_COLOR = {
-    'male': 'ADD8E6',    # Light Blue
-    'female': 'FFC0CB',  # Pink
-    'lgbtq+': '90EE90',  # Light Green
-    'lgbtq': '90EE90',
+# ============================================================================
+# VISUAL FORMATTING CONSTANTS
+# ============================================================================
+
+# Color coding for Excel output based on participant characteristics
+SEX_COLOR = {
+    'male': 'ADD8E6',    # Light Blue for male participants
+    'female': 'FFC0CB',  # Pink for female participants
 }
+
+# Special font color for LGBTQ+ participants
+LGBTQ_FONT_COLOR = '800000'  # Maroon font color
+
+# Fill color for participants with 'get_bigger' goal
+GREEN_COLOR = '90EE90'  # Light Green fill for User IDs
+
+# ============================================================================
+# LOCATION FORMATTING FUNCTIONS
+# ============================================================================
 
 def format_location_display(member, column_mapping):
-    """Format location display based on residing_ph status"""
-    residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
-    
+    """
+    Format location display based on whether participant resides in Philippines.
+
+    PHILIPPINES FORMAT: "City, Province"
+    INTERNATIONAL FORMAT: "City, State, Location Identifier, Country"
+
+    Uses enhanced logic to prioritize international-specific columns when available.
+
+    Args:
+        member: Participant data dictionary
+        column_mapping: Column name mappings
+
+    Returns:
+        str: Formatted location string
+    """
+    residing_ph = safe_get_value(member, column_mapping.get('residing_ph', ''), '0').lower()
+
     if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
         # Philippines resident - show "city, province" format
-        city = member.get(column_mapping.get('city'), '')
-        province = member.get(column_mapping.get('province'), '')
-        
+        city = safe_get_value(member, column_mapping.get('city', ''), '')
+        province = safe_get_value(member, column_mapping.get('province', ''), '')
+
         # Use "MM" as acronym for Metro Manila
         if province and str(province).lower() == 'metro manila':
             province = 'MM'
-        
+
         if city and province:
             return f"{city}, {province}"
         elif city:
@@ -140,17 +297,31 @@ def format_location_display(member, column_mapping):
         else:
             return ''
     else:
-        # International resident - show "State, Country"
-        state = member.get(column_mapping.get('state'), '')
-        country = member.get(column_mapping.get('country'), '')
-        if state and country:
-            return f"{state}, {country}"
-        elif country:
-            return country
-        else:
-            return member.get(column_mapping.get('city'), '')
+        # International resident - show enhanced format: international_city, international_state, location_identifier, country
+        # Check if international-specific columns exist, otherwise fall back to regular columns
+        international_city = member.get('internationalCity', '') or safe_get_value(member, column_mapping.get('city', ''), '')
+        international_state = member.get('internationalState', '') or safe_get_value(member, column_mapping.get('state', ''), '')
+        location_identifier = member.get('locationIdentifier', '') or safe_get_value(member, 'location_identifier', '')
+        country = safe_get_value(member, column_mapping.get('country', ''), '')
 
-# Define similar country regions for grouping
+        parts = []
+        if international_city:
+            parts.append(international_city)
+        if international_state:
+            parts.append(international_state)
+        if location_identifier:
+            parts.append(location_identifier)
+        if country:
+            parts.append(country)
+
+        return ', '.join(parts) if parts else ''
+
+# ============================================================================
+# GEOGRAPHIC GROUPING CONFIGURATION
+# ============================================================================
+
+# Geographic regions for international participant grouping
+# Used when participants prefer no geographic restrictions
 SIMILAR_COUNTRIES = {
     'southeast_asia': ['Philippines', 'Indonesia', 'Malaysia', 'Thailand', 'Vietnam', 'Singapore', 'Myanmar', 'Cambodia', 'Laos', 'Brunei'],
     'east_asia': ['China', 'Japan', 'South Korea', 'Taiwan', 'Hong Kong', 'Macau'],
@@ -162,7 +333,8 @@ SIMILAR_COUNTRIES = {
     'oceania': ['Australia', 'New Zealand', 'Fiji', 'Papua New Guinea']
 }
 
-# Define Philippines regions and their provinces
+# Philippine administrative regions and their provinces/cities
+# Used for geographic grouping of Philippines-based participants
 PHILIPPINES_REGIONS = {
     'luzon': [
         'Metro Manila', 'Manila', 'Quezon City', 'Caloocan', 'Las Piñas', 'Makati', 'Malabon', 'Mandaluyong', 'Marikina', 'Muntinlupa', 'Navotas', 'Parañaque', 'Pasay', 'Pasig', 'San Juan', 'Taguig', 'Valenzuela', 'Pateros',
@@ -252,7 +424,8 @@ TIMEZONE_REGIONS = {
     'oceania': 'GMT+10'
 }
 
-# GMT offset mapping for timezone labels
+# GMT offset mapping for timezone display labels
+# Converts timezone region codes to human-readable GMT offset labels
 GMT_OFFSETS = {
     'pst_pdt': 'GMT-8',
     'mst_mdt': 'GMT-7', 
@@ -416,23 +589,45 @@ def get_country_region(country):
             return region
     return 'other'
 
-def apply_color_to_cell(cell, gender_identity, same_gender=None, kaizen_client_type=None):
-    gender_identity = str(gender_identity).lower()
-    if gender_identity in GENDER_COLOR:
-        cell.fill = PatternFill(start_color=GENDER_COLOR[gender_identity], end_color=GENDER_COLOR[gender_identity], fill_type="solid")
-    
+def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None, has_accountability_buddies=None, current_goal=None, is_user_id=False):
+    """Apply color coding based on sex, font styling, and special fill coloring"""
+    # Apply fill color based on sex (default)
+    fill_color = None
+    sex_lower = str(sex).lower().strip() if sex else ''
+    if sex_lower in SEX_COLOR:
+        fill_color = SEX_COLOR[sex_lower]
+
+    # Special fill color for get_bigger goal (overrides sex color for User ID)
+    if is_user_id and current_goal and str(current_goal).lower() == 'get_bigger':
+        fill_color = GREEN_COLOR
+
+    # Apply fill color if set
+    if fill_color:
+        cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+
     # Apply font formatting
-    font_style = Font()
-    if same_gender is not None and str(same_gender).lower() == "same_gender":
-        font_style = Font(bold=True)
-    
-    # Apply dark red color for team members
-    if kaizen_client_type is not None and str(kaizen_client_type).lower() == "team_member":
-        font_style = Font(color="8B0000")  # Dark red color
-        if same_gender is not None and str(same_gender).lower() == "same_gender":
-            font_style = Font(bold=True, color="8B0000")  # Bold and dark red
-    
-    cell.font = font_style
+    font_color = None
+    is_bold = False
+    is_underline = False
+
+    # Maroon font color for LGBTQ+
+    if gender_identity and str(gender_identity).lower() in ['lgbtq+', 'lgbtq']:
+        font_color = LGBTQ_FONT_COLOR
+
+    # Bold text for same_gender preference
+    if gender_preference and str(gender_preference).lower().strip() == 'same_gender':
+        is_bold = True
+
+    # Underlined text for users with accountability buddies
+    if has_accountability_buddies and str(has_accountability_buddies).lower() in ['1', '1.0', 'true', 'yes']:
+        is_underline = True
+
+    # Create font style - always create a new font with the desired properties
+    cell.font = Font(
+        color=font_color,
+        bold=is_bold,
+        underline='single' if is_underline else None
+    )
 
 def generate_diagnostic_report(user_tracking, original_count, solo_groups, grouped, excluded_users, requested_groups, column_mapping):
     """Generate a comprehensive diagnostic report of user distribution"""
@@ -474,7 +669,7 @@ def generate_diagnostic_report(user_tracking, original_count, solo_groups, group
     # Detailed breakdown by status
     print(f"\n📋 DETAILED BREAKDOWN:")
     
-    for status in ['excluded', 'accountability_buddies', 'team_name', 'solo', 'regular_grouping']:
+    for status in ['excluded', 'accountability_buddies', 'solo', 'regular_grouping']:
         users_in_status = [u for u in user_tracking.values() if u['status'] == status]
         if users_in_status:
             print(f"\n  {status.upper().replace('_', ' ')} ({len(users_in_status)} users):")
@@ -856,8 +1051,24 @@ def check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups,
 
 def merge_small_groups(grouped, column_mapping):
     """
-    Merge small groups (less than 4 members) that start with 'Group*' based on geographic proximity.
-    Ensures all groups have a maximum of 5 members.
+    POST-PROCESSING OPTIMIZATION: Merge small groups to improve group sizes.
+
+    Identifies regular groups with <4 members and merges them based on geographic
+    proximity and gender compatibility. Ensures all groups have optimal sizes
+    (3-5 members) while maintaining geographic and gender preferences.
+
+    MERGING STRATEGY:
+    1. Find small groups (<4 members) in regular algorithmic groups
+    2. Group small groups by geographic location + gender compatibility
+    3. Merge compatible groups, prioritizing same-location matches
+    4. Never exceed 5 members per group
+
+    Args:
+        grouped: Dictionary of {group_name: [members]} from regular grouping
+        column_mapping: Column name mappings
+
+    Returns:
+        dict: Optimized groups with improved size distribution
     """
     if not grouped:
         return grouped
@@ -1054,7 +1265,29 @@ def merge_small_groups(grouped, column_mapping):
     
     return final_groups
 
+# ============================================================================
+# MAIN GROUPING FUNCTIONS
+# ============================================================================
+
 def group_participants(data, column_mapping):
+    """
+    MAIN GROUPING ALGORITHM - Processes participants into optimized groups.
+
+    PROCESSING ORDER (by priority):
+    1. Filter out non-students (joiningAsStudent=False)
+    2. Accountability Buddies (highest priority - explicit user requests)
+    3. Solo Participants (user choice)
+    4. Priority Same-Gender Grouping (females first, 5-member target, same location)
+    5. Regular Algorithmic Grouping (remaining participants)
+    6. Small Group Merging (optimization)
+
+    Args:
+        data: List of participant dictionaries
+        column_mapping: Column name mappings
+
+    Returns:
+        tuple: (solo_groups, grouped, excluded_users, requested_groups, combined_group_info)
+    """
     solo_groups = []
     grouped = defaultdict(list)
     group_counter = 1
@@ -1137,7 +1370,11 @@ def group_participants(data, column_mapping):
         
         data = filtered_data
     
-    # 1. Handle Accountability Buddies (Requested Groups) - Process first
+    # ============================================================================
+    # PHASE 1: ACCOUNTABILITY BUDDIES (Highest Priority)
+    # ============================================================================
+    # Process users who explicitly requested to be grouped with specific buddies.
+    # Uses graph-based clustering to find connected components of mutual buddies.
     requested_groups = []
     accountability_count = 0
     
@@ -1196,49 +1433,15 @@ def group_participants(data, column_mapping):
                     user_tracking[user_id_str]['status'] = 'accountability_buddies'
                     user_tracking[user_id_str]['reason'] = 'Referenced as buddy by others'
     
-    # Second pass: collect participants with temporary team names (even without accountability buddies)
-    
-    # Second pass: collect participants with temporary team names (EXCLUDING those with accountability buddies)
-    team_name_participants = []
-    for row in data:
-        temporary_team_name = get_value(row, 'temporary_team_name', '')
-        user_id = get_value(row, 'user_id', 'Unknown')
-        user_email = normalize_email(get_value(row, 'email', ''), email_mapping)
-        
-        # Check if user has a valid temporary team name
-        has_team_name = temporary_team_name and str(temporary_team_name).strip() not in ['', 'None', 'nan']
-        
-        # Check if user is already in accountability_participants (has accountability buddies)
-        is_accountability_participant = any(
-            normalize_email(get_value(acc_user, 'email', ''), email_mapping) == user_email 
-            for acc_user in accountability_participants
-        )
-        
-        if has_team_name and not is_accountability_participant:
-            # Only include users with team names who DON'T have accountability buddies
-            team_name_participants.append(row)
-            user_id_str = str(user_id).strip() if user_id else 'Unknown'
-            if user_id_str in user_tracking:
-                user_tracking[user_id_str]['status'] = 'team_name'
-                user_tracking[user_id_str]['reason'] = f'Has team name: {temporary_team_name}'
-    
-    # Create a mapping of email to user data for quick lookup
-    
     # Create a mapping of email to user data for quick lookup
     email_to_user = {}
     for row in data:
         # Use the column mapping to find email
         email = get_value(row, 'email', '')
-        
+
         if email and '@' in email:
             normalized_email = normalize_email(email, email_mapping)
             email_to_user[normalized_email] = row
-    
-    # Create a set of emails for team name participants
-    team_name_emails = set()
-    for participant in team_name_participants:
-        participant_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
-        team_name_emails.add(participant_email)
     
     # Pre-process: Group users with mutual buddies and their referenced buddies
     # Use a more comprehensive approach to find all connected groups
@@ -1294,107 +1497,30 @@ def group_participants(data, column_mapping):
         return component
     
     def split_large_component_by_direct_connections(connected_emails, max_group_size=7):
-        """Split large connected components into smaller groups prioritizing team names"""
+        """
+        Split large accountability buddy groups into smaller groups.
+
+        When connected components exceed max_group_size (7), split them evenly
+        into smaller groups to ensure manageable group sizes.
+
+        Args:
+            connected_emails: Set of emails in the connected component
+            max_group_size: Maximum allowed group size (default 7)
+
+        Returns:
+            List of email groups, each containing <= max_group_size emails
+        """
         if len(connected_emails) <= max_group_size:
             return [list(connected_emails)]
-        
-        # Create a list of users with their team names
-        users_with_info = []
-        for email in connected_emails:
-            if email in email_to_user:
-                user = email_to_user[email]
-                
-                # Get team name
-                team_name = get_value(user, 'temporary_team_name', '')
-                team_name = str(team_name).strip() if team_name else ''
-                
-                users_with_info.append({
-                    'email': email,
-                    'user': user,
-                    'team_name': team_name
-                })
-        
-        # Group users by team name similarity
-        team_groups = {}
-        assigned_emails = set()
-        
-        for user_info in users_with_info:
-            email = user_info['email']
-            team_name = user_info['team_name']
-            
-            if email in assigned_emails:
-                continue
-            
-            # Find or create a team group for this user
-            team_key = None
-            for existing_team in team_groups:
-                if check_team_name_similarity(team_name, existing_team):
-                    team_key = existing_team
-                    break
-            
-            if team_key is None:
-                team_key = team_name
-            
-            if team_key not in team_groups:
-                team_groups[team_key] = []
-            
-            team_groups[team_key].append(email)
-            assigned_emails.add(email)
-        
-        # Create final groups from team groups
+
+        # Split evenly into groups of max_group_size
         final_groups = []
-        for team_name, team_emails in team_groups.items():
-            if len(team_emails) <= max_group_size:
-                # Team fits in one group
-                final_groups.append(team_emails)
-            else:
-                # Split large team into multiple groups
-                for i in range(0, len(team_emails), max_group_size):
-                    group = team_emails[i:i + max_group_size]
-                    final_groups.append(group)
-        
+        emails_list = list(connected_emails)
+        for i in range(0, len(emails_list), max_group_size):
+            group = emails_list[i:i + max_group_size]
+            final_groups.append(group)
+
         return final_groups
-    
-    def check_team_name_similarity(team1, team2):
-        """Check if two team names are similar enough to group together"""
-        if not team1 or not team2:
-            return False
-        
-        # Normalize team names
-        team1_norm = str(team1).lower().strip()
-        team2_norm = str(team2).lower().strip()
-        
-        # Exact match
-        if team1_norm == team2_norm:
-            return True
-        
-        # Check for common words
-        team1_words = set(team1_norm.split())
-        team2_words = set(team2_norm.split())
-        
-        # If they share at least 50% of words, consider them similar
-        if team1_words and team2_words:
-            common_words = team1_words.intersection(team2_words)
-            min_words = min(len(team1_words), len(team2_words))
-            if min_words > 0:
-                similarity_ratio = len(common_words) / min_words
-                return similarity_ratio >= 0.5
-        
-        # Check for partial matches (one team name contains the other)
-        if team1_norm in team2_norm or team2_norm in team1_norm:
-            return True
-        
-        # Check for common patterns (e.g., "Team X" vs "X Team")
-        team1_clean = team1_norm.replace('team', '').replace('group', '').strip()
-        team2_clean = team2_norm.replace('team', '').replace('group', '').strip()
-        
-        if team1_clean and team2_clean:
-            if team1_clean == team2_clean:
-                return True
-            if team1_clean in team2_clean or team2_clean in team1_clean:
-                return True
-        
-        return False
     
     # Alternative approach: ensure all referenced users are included
     def ensure_referenced_users_included():
@@ -1613,114 +1739,13 @@ def group_participants(data, column_mapping):
         # Skip if already assigned
         if participant_email in assigned_users:
             continue
-        
-        # Skip if user has a team name (will be processed in team name section)
-        team_name = get_value(participant, 'temporary_team_name', '')
-        has_team_name = team_name and str(team_name).strip() not in ['', 'None', 'nan']
-        if has_team_name:
-            continue
-        
+
         # Create a solo group for this user
         group_members = [participant]
         assigned_users.add(participant_email)
         requested_groups.append(group_members)
         accountability_count += 1
 
-        
-    # Process team name participants and group them by team name
-    if team_name_participants:
-        
-        # Group team name participants by their team name
-        team_groups = defaultdict(list)
-        for participant in team_name_participants:
-            team_name = get_value(participant, 'temporary_team_name', '').strip()
-            user_id = get_value(participant, 'user_id', 'Unknown')
-            user_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
-            
-            # Only include team name participants who are not already assigned
-            if user_email not in assigned_users:
-                team_groups[team_name].append(participant)
-        
-        # Process each team name
-        for team_name, team_members in team_groups.items():
-            if team_members:
-                # Check if there's an existing requested group with the same team name
-                existing_group_index = None
-                for i, existing_group in enumerate(requested_groups):
-                    # Check if any member in the existing group has the same team name
-                    for member in existing_group:
-                        member_team_name_raw = get_value(member, 'temporary_team_name', '')
-                        # Handle NaN, None, and other non-string values
-                        if member_team_name_raw and str(member_team_name_raw).strip() not in ['', 'None', 'nan']:
-                            member_team_name = str(member_team_name_raw).strip()
-                            if member_team_name == team_name:
-                                existing_group_index = i
-                                break
-                    if existing_group_index is not None:
-                        break
-                
-                if existing_group_index is not None:
-                    # Add team members to existing group if there's space
-                    existing_group = requested_groups[existing_group_index]
-                    remaining_team_members = []
-                    
-                    for participant in team_members:
-                        participant_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
-                        
-                        # Check if participant is already in the existing group
-                        existing_emails = [normalize_email(get_value(member, 'email', ''), email_mapping) for member in existing_group]
-                        if participant_email in existing_emails:
-                            # Already in this group, skip
-                            continue
-                        
-                        # Check if group has space (max 5 members)
-                        if len(existing_group) < 5:
-                            existing_group.append(participant)
-                            assigned_users.add(participant_email)
-                            accountability_count += 1
-                        else:
-                            # Add to remaining list if can't fit in existing group
-                            remaining_team_members.append(participant)
-                    
-                    # Create additional groups for remaining team members
-                    if remaining_team_members:
-                        i = 0
-                        while i < len(remaining_team_members):
-                            group_members = remaining_team_members[i:i+5]
-                            
-                            # Mark all members as assigned
-                            for member in group_members:
-                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                                assigned_users.add(member_email)
-                            
-                            requested_groups.append(group_members)
-                            accountability_count += len(group_members)
-                            
-                            i += 5
-                else:
-                    # No existing group with this team name, create new groups
-                    # Filter out team members who are already assigned to other groups
-                    unassigned_team_members = []
-                    for participant in team_members:
-                        participant_email = normalize_email(get_value(participant, 'email', ''), email_mapping)
-                        if participant_email not in assigned_users:
-                            unassigned_team_members.append(participant)
-                    
-                    # Create groups of up to 5 members from unassigned team members
-                    if unassigned_team_members:
-                        i = 0
-                        while i < len(unassigned_team_members):
-                            group_members = unassigned_team_members[i:i+5]
-                            
-                            # Mark all members as assigned
-                            for member in group_members:
-                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                                assigned_users.add(member_email)
-                            
-                            requested_groups.append(group_members)
-                            accountability_count += len(group_members)
-                            
-                            i += 5
     
     # Move single-member requested groups to regular groups BEFORE regular grouping
     single_member_requested_groups = []
@@ -1728,31 +1753,22 @@ def group_participants(data, column_mapping):
     
     for group in requested_groups:
         if len(group) == 1:
-            # Check if this single-member group should be moved to regular groups
-            user = group[0]
-            team_name = get_value(user, 'temporary_team_name', '')
-            has_team_name = team_name and str(team_name).strip() not in ['', 'None', 'nan']
-            has_accountability_buddies = str(get_value(user, 'has_accountability_buddies', '0')).strip().lower() in ['1', '1.0', 'true', 'yes']
-            
-            # Move ALL single-member groups to regular groups (both accountability buddy and team name groups)
+            # Move ALL single-member groups to regular groups
             # This ensures no users are left isolated in single-member groups
-            if True:  # Always move single-member groups to regular groups
-                # Single member group - move to regular groups
-                single_member_requested_groups.append(user)
-                
-                # Update user tracking
-                user_email = normalize_email(get_value(user, 'email', ''), email_mapping)
-                for user_id, info in user_tracking.items():
-                    if info.get('email') == user_email:
-                        info['status'] = 'regular_grouping'
-                        info['reason'] = 'Moved from single-member requested group to regular grouping'
-                        break
-                
-                # Remove from assigned_users so they can go through regular grouping
-                assigned_users.discard(user_email)
-            else:
-                # User has team name and no accountability buddies - keep as requested group (team name group)
-                multi_member_requested_groups.append(group)
+            user = group[0]
+            # Single member group - move to regular groups
+            single_member_requested_groups.append(user)
+
+            # Update user tracking
+            user_email = normalize_email(get_value(user, 'email', ''), email_mapping)
+            for user_id, info in user_tracking.items():
+                if info.get('email') == user_email:
+                    info['status'] = 'regular_grouping'
+                    info['reason'] = 'Moved from single-member requested group to regular grouping'
+                    break
+
+            # Remove from assigned_users so they can go through regular grouping
+            assigned_users.discard(user_email)
         else:
             # Multi-member group - keep as requested group
             multi_member_requested_groups.append(group)
@@ -1760,7 +1776,11 @@ def group_participants(data, column_mapping):
     # Keep original requested groups without combining
     # No combining logic - keep groups as they were originally formed
     
-    # 2. Handle Solo participants (from remaining data)
+    # ============================================================================
+    # PHASE 2: SOLO PARTICIPANTS (User Choice)
+    # ============================================================================
+    # Users who explicitly chose to work individually (go_solo=True)
+    # These participants are placed in single-member groups
     solo_count = 0
     # Remove accountability participants and already assigned users from data for solo processing
     remaining_data = []
@@ -1791,37 +1811,186 @@ def group_participants(data, column_mapping):
                 user_tracking[user_id_str]['status'] = 'solo'
                 user_tracking[user_id_str]['reason'] = 'go_solo = True'
     
-    # 3. Handle non-solo participants (from remaining data)
+    # ============================================================================
+    # PHASE 3: REGULAR GROUPING (Algorithmic - Gender + Geography)
+    # ============================================================================
+    # Process remaining participants using hierarchical grouping algorithm:
+    # 1. Separate by gender preference (same_gender vs no_preference)
+    # 2. Within each gender group, separate by geography (PH vs International)
+    # 3. Philippines: Province → City → Same-city groups
+    # 4. International: Country → State → Timezone regions
+    # 5. Optimize group sizes (3-5 members per group)
+
     non_solo = [row for row in remaining_data if str(get_value(row, 'go_solo', '0')).strip().lower() not in ['1', '1.0', 'true']]
-    
-    # Group by gender preference
-    gender_pref_groups = defaultdict(list)
-    
+
+    # ============================================================================
+    # STEP 1: PRIORITY GROUPING - Same Gender First, Females First
+    # ============================================================================
+    # Process same_gender participants first, females before males
+    # Target group size: 5 members from same location
+    # Fill gaps with no_preference participants from same location
+
+    # Separate participants by sex and preference
+    sex_preference_groups = {
+        'female': {'same_gender': [], 'no_preference': []},
+        'male': {'same_gender': [], 'no_preference': []}
+    }
+
     for row in non_solo:
+        sex = str(get_value(row, 'sex', '')).lower()
+        gender_pref = str(get_value(row, 'gender_preference', '')).lower()
+
+        # Only process female/male (ignore other genders for now)
+        if sex in ['female', 'male']:
+            if gender_pref == 'same_gender':
+                sex_preference_groups[sex]['same_gender'].append(row)
+            elif gender_pref == 'no_preference':
+                sex_preference_groups[sex]['no_preference'].append(row)
+            # Ignore 'other' preferences for now - they'll be handled later
+
+    # Process females first, then males
+    for current_sex in ['female', 'male']:
+        same_gender_participants = sex_preference_groups[current_sex]['same_gender']
+        no_preference_participants = sex_preference_groups[current_sex]['no_preference']
+
+        # Group same_gender participants by location first
+        location_groups = defaultdict(list)
+
+        # Separate by Philippines vs International
+        for participant in same_gender_participants:
+            ph_val = str(get_value(participant, 'residing_ph', '0')).strip().lower()
+            if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                # Philippines: use province_city combination
+                province = str(get_value(participant, 'province', '')).strip()
+                city = str(get_value(participant, 'city', '')).strip()
+                location_key = f"PH_{province}_{city}"
+            else:
+                # International: use country_state combination
+                country = str(get_value(participant, 'country', '')).strip()
+                state = str(get_value(participant, 'state', '')).strip()
+                location_key = f"INT_{country}_{state}"
+
+            location_groups[location_key].append(participant)
+
+        # Process each location group - create groups of 5 same_gender participants
+        for location_key, participants in location_groups.items():
+            # Sort participants for consistent ordering
+            participants.sort(key=lambda p: get_value(p, 'user_id', ''))
+
+            # Create groups of 5 from same_gender participants
+            i = 0
+            while i < len(participants):
+                # Take up to 5 participants for this group
+                group_size = min(5, len(participants) - i)
+                group_members = participants[i:i + group_size]
+
+                # If we have less than 5, try to fill with no_preference participants from same location
+                if len(group_members) < 5:
+                    # Find no_preference participants from same location
+                    available_fillers = []
+                    for filler in no_preference_participants:
+                        ph_val = str(get_value(filler, 'residing_ph', '0')).strip().lower()
+                        if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                            filler_province = str(get_value(filler, 'province', '')).strip()
+                            filler_city = str(get_value(filler, 'city', '')).strip()
+                            filler_location = f"PH_{filler_province}_{filler_city}"
+                        else:
+                            filler_country = str(get_value(filler, 'country', '')).strip()
+                            filler_state = str(get_value(filler, 'state', '')).strip()
+                            filler_location = f"INT_{filler_country}_{filler_state}"
+
+                        if filler_location == location_key:
+                            available_fillers.append(filler)
+
+                    # Add fillers to reach target of 5 (but don't exceed)
+                    fillers_needed = 5 - len(group_members)
+                    fillers_to_add = available_fillers[:fillers_needed]
+
+                    # Remove used fillers from available pool
+                    for filler in fillers_to_add:
+                        no_preference_participants.remove(filler)
+
+                    group_members.extend(fillers_to_add)
+
+                # Create the group name based on location
+                if location_key.startswith('PH_'):
+                    parts = location_key.split('_', 2)
+                    if len(parts) >= 3:
+                        province, city = parts[1], parts[2]
+                        location_info = f"Province: {province}, City: {city}"
+                    else:
+                        location_info = "Philippines"
+                else:  # INT_
+                    parts = location_key.split('_', 2)
+                    if len(parts) >= 3:
+                        country, state = parts[1], parts[2]
+                        location_info = f"Country: {country}, State: {state}"
+                    else:
+                        location_info = "International"
+
+                group_name = f"Group {group_counter} ({current_sex}, same_gender, {location_info})"
+                grouped[group_name] = group_members
+
+                # Mark all members as assigned
+                for member in group_members:
+                    member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                    assigned_users.add(member_email)
+
+                group_counter += 1
+                i += len(group_members)  # Move past the participants we used
+
+        # Handle remaining same_gender participants that couldn't form groups of 3+
+        remaining_same_gender = []
+        for location_key, participants in location_groups.items():
+            remaining_same_gender.extend(participants)
+
+        # If we have remaining participants, create smaller groups or add to mixed groups later
+        # For now, they'll be handled in the regular algorithmic grouping below
+
+    # After processing priority same_gender groups, handle remaining participants
+    # with regular algorithmic grouping
+    remaining_participants = []
+    for row in non_solo:
+        user_email = normalize_email(get_value(row, 'email', ''), email_mapping)
+        if user_email not in assigned_users:
+            remaining_participants.append(row)
+
+    # ============================================================================
+    # STEP 3: REGULAR ALGORITHMIC GROUPING (for remaining participants)
+    # ============================================================================
+    # Apply standard geographic grouping to participants not assigned to priority groups
+
+    # Step 4: Group remaining participants by gender preference
+    gender_pref_groups = defaultdict(list)
+
+    for row in remaining_participants:
         gender_pref = str(get_value(row, 'gender_preference', '')).lower()
         user_id = get_value(row, 'user_id', 'Unknown')
-        
+
+        # Determine grouping key based on gender preferences
         if gender_pref == 'same_gender':
-            # For same_gender preference, use biological sex to ensure male/female separation
+            # STRICT GENDER SEPARATION: Same biological sex only
             sex = str(get_value(row, 'sex', '')).lower()
             gender_identity = str(get_value(row, 'gender_identity', '')).upper()
-            
+
             if gender_identity == 'LGBTQ+':
-                # LGBTQ+ participants are grouped by their biological sex for same_gender preference
+                # LGBTQ+ participants grouped by biological sex for same-gender preference
                 gender_key = f"lgbtq+_{sex}"
             else:
-                # Use biological sex for strict male/female separation
+                # Regular participants: group by biological sex
                 gender_key = sex
         elif gender_pref == 'no_preference':
+            # MIXED GENDER: Allow any gender combination
             gender_key = 'no_preference'
         else:
+            # Unknown preference: separate group
             gender_key = 'other'
-        
+
         gender_pref_groups[gender_key].append(row)
-    
-    # Now, within each gender group, group by location with hierarchical approach
+
+    # Step 5: Within each gender group, apply geographic grouping
     for gender_key, rows in gender_pref_groups.items():
-        # Split by PH or not
+        # Separate Philippines vs International residents
         ph_rows = []
         non_ph_rows = []
         
@@ -1835,7 +2004,8 @@ def group_participants(data, column_mapping):
                 # For unknown values, treat as international
                 non_ph_rows.append(r)
         
-        # Group Philippines participants by Province -> City hierarchy
+    # PHILIPPINES GROUPING: Province → City → Same-city groups
+    # Prioritizes keeping participants from same city together (Step 5)
         province_groups = defaultdict(list)
         for r in ph_rows:
             province = get_value(r, 'province', 'Unknown Province')
@@ -1963,9 +2133,10 @@ def group_participants(data, column_mapping):
                                 assigned_users.add(member_email)
                             group_counter += 1
         
-        # Handle international participants
+    # INTERNATIONAL GROUPING: Country → State → Timezone regions
+    # Uses timezone clustering for geographic proximity (Step 5)
         if non_ph_rows:
-            # Group international participants by country -> state hierarchy
+            # Group by country first, then state, then timezone region
             country_groups = defaultdict(list)
             for r in non_ph_rows:
                 country = get_value(r, 'country', 'Unknown Country')
@@ -2084,20 +2255,50 @@ def group_participants(data, column_mapping):
     return solo_groups, grouped, excluded_users, multi_member_requested_groups, {}
 
 def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excluded_users=None, requested_groups=None, combined_group_info=None):
+    """
+    Save all groups to formatted Excel file with color coding and structure.
+
+    OUTPUT STRUCTURE (by sheet row order):
+    1. Requested Groups (Accountability Buddies) - Green highlight if ≥5 members
+    2. Solo Groups - Individual participants
+    3. Regular Groups - Light blue highlight if ≥5 members + same location
+    4. Excluded Users - Participants who opted out (joiningAsStudent=False)
+
+    EXCEL COLUMNS:
+    - Group Name, User ID 1-7, Name 1-7, Location 1-7, Coach 1-7
+    - Gender Identity, Sex, Residing in PH, Gender Preference
+    - Country, Province, City, State, Previous Coach Name
+
+    VISUAL FORMATTING:
+    - User IDs: Sex-based fill colors (blue=male, pink=female)
+    - Special colors: Green fill for 'get_bigger' goal, maroon font for LGBTQ+
+    - Bold text: Same-gender preference groups
+    - Underlined text: Users with accountability buddies
+    - Group highlighting: Green (requested ≥5), Blue (regular ≥5 + same location)
+
+    Args:
+        solo_groups: List of single-member groups
+        grouped: Dict of {group_name: [members]} for regular groups
+        filename_or_buffer: Output file path or BytesIO buffer
+        column_mapping: Column name mappings
+        excluded_users: Users who opted out
+        requested_groups: Accountability buddy groups
+        combined_group_info: Information about combined groups
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Grouped Members"
     ws.append([
         "Group Name",
-        "User ID 1", "Name 1", "City 1",
-        "User ID 2", "Name 2", "City 2",
-        "User ID 3", "Name 3", "City 3",
-        "User ID 4", "Name 4", "City 4",
-        "User ID 5", "Name 5", "City 5",
-        "User ID 6", "Name 6", "City 6",
-        "User ID 7", "Name 7", "City 7",
+        "User ID 1", "Name 1", "Location 1", "Coach and Age 1",
+        "User ID 2", "Name 2", "Location 2", "Coach and Age 2",
+        "User ID 3", "Name 3", "Location 3", "Coach and Age 3",
+        "User ID 4", "Name 4", "Location 4", "Coach and Age 4",
+        "User ID 5", "Name 5", "Location 5", "Coach and Age 5",
+        "User ID 6", "Name 6", "Location 6", "Coach and Age 6",
+        "User ID 7", "Name 7", "Location 7", "Coach and Age 7",
         "Gender Identity", "Sex", "Residing in PH", "Gender Preference", "Country", "Province", "City", "State",
-        "Temporary Team Name", "Previous Coach Name"
+        "Previous Coach Name"
     ])
     
     # Write requested groups (accountability buddies)
@@ -2112,25 +2313,14 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 group = sorted(group, key=lambda m: (
                     m.get(column_mapping.get('user_id'), ''),
                     m.get(column_mapping.get('name'), ''),
-                    m.get(column_mapping.get('city'), '')
+                    m.get(column_mapping.get('city'), ''),
+                    m.get(column_mapping.get('previous_coach_name'), '')
                 ))
             
-            # Determine if this is a team group or accountability buddy group
+            # All requested groups are accountability buddy groups
             first_member = group[0]
-            team_name = first_member.get(column_mapping.get('temporary_team_name'), '')
-            has_accountability_buddies = first_member.get(column_mapping.get('has_accountability_buddies'), '0')
             accountability_buddies = first_member.get(column_mapping.get('accountability_buddies'), '')
-            
-            # Check if all members have the same team name and no accountability buddies
-            all_same_team = all(
-                member.get(column_mapping.get('temporary_team_name'), '') == team_name 
-                for member in group
-            )
-            all_no_accountability = all(
-                str(member.get(column_mapping.get('has_accountability_buddies'), '0')).strip().lower() not in ['1', '1.0', 'true', 'yes']
-                for member in group
-            )
-            
+
             # Check if this is a combined group
             is_combined_group = False
             combined_info = ""
@@ -2197,34 +2387,45 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 if i < len(group):
                     member = group[i]
                     location_display = format_location_display(member, column_mapping)
+                    coach_name = safe_get_value(member, column_mapping.get('previous_coach_name', ''), '')
+                    age_group = safe_get_value(member, column_mapping.get('age_group', ''), '')
+                    # Format coach name with age group in parentheses
+                    coach_with_age = coach_name
+                    if coach_name and age_group:
+                        coach_with_age = f"{coach_name} ({age_group})"
+                    elif coach_name:
+                        coach_with_age = coach_name
+                    elif age_group:
+                        coach_with_age = f"({age_group})"
+
                     row.extend([
                         member.get(column_mapping.get('user_id'), ''),
                         member.get(column_mapping.get('name'), ''),
-                        location_display
+                        location_display,
+                        coach_with_age
                     ])
                 else:
-                    row.extend(["", "", ""])
+                    row.extend(["", "", "", ""])
             
             # Add extra info for the first member
             member = group[0]
-            
-            # Collect all team names from group members
-            team_names = []
-            for group_member in group:
-                team_name = group_member.get(column_mapping.get('temporary_team_name'), '')
-                if team_name and str(team_name).strip() not in ['', 'None', 'nan']:
-                    team_names.append(str(team_name).strip())
-            
-            # Combine team names with "/" separator if they're different
-            combined_team_names = ' / '.join(sorted(set(team_names))) if team_names else ''
-            
-            # Collect all coach names from group members
+
+            # Collect all coach names with age groups from group members
             coach_names = []
             for group_member in group:
-                coach_name = group_member.get(column_mapping.get('previous_coach_name'), '')
+                coach_name = safe_get_value(group_member, column_mapping.get('previous_coach_name', ''), '')
+                age_group = safe_get_value(group_member, column_mapping.get('age_group', ''), '')
                 if coach_name and str(coach_name).strip() not in ['', 'None', 'nan']:
-                    coach_names.append(str(coach_name).strip())
-            
+                    # Format coach name with age group
+                    coach_with_age = coach_name
+                    if coach_name and age_group:
+                        coach_with_age = f"{coach_name} ({age_group})"
+                    elif coach_name:
+                        coach_with_age = coach_name
+                    elif age_group:
+                        coach_with_age = f"({age_group})"
+                    coach_names.append(str(coach_with_age).strip())
+
             # Combine coach names with "/" separator if they're different
             combined_coach_names = ' / '.join(sorted(set(coach_names))) if coach_names else ''
             
@@ -2237,7 +2438,6 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 member.get(column_mapping.get('province'), ''),
                 member.get(column_mapping.get('city'), ''),
                 member.get(column_mapping.get('state'), ''),
-                combined_team_names,
                 combined_coach_names
             ])
             
@@ -2250,8 +2450,12 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     member = group[i]
                     gender_pref = member.get(column_mapping.get('gender_preference'), '')
                     kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
-                    apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
-                    apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+                    sex = member.get(column_mapping.get('sex'), '')
+                    gender_identity = member.get(column_mapping.get('gender_identity'), '')
+                    has_accountability_buddies = member.get(column_mapping.get('has_accountability_buddies'), '')
+                    current_goal = member.get(column_mapping.get('current_goal'), '')
+                    apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
+                    apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
         
         # After all requested groups are written, apply green highlight to group name cell if group has 5 or more members
         for row_idx, group_size in group_row_indices:
@@ -2265,20 +2469,33 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             group = sorted(group, key=lambda m: (
                 m.get(column_mapping.get('user_id'), ''),
                 m.get(column_mapping.get('name'), ''),
-                m.get(column_mapping.get('city'), '')
+                m.get(column_mapping.get('city'), ''),
+                m.get(column_mapping.get('previous_coach_name'), '')
             ))
         row = [f"Solo {idx}"]
         for i in range(7):
             if i < len(group):
                 member = group[i]
                 location_display = format_location_display(member, column_mapping)
+                coach_name = safe_get_value(member, column_mapping.get('previous_coach_name', ''), '')
+                age_group = safe_get_value(member, column_mapping.get('age_group', ''), '')
+                # Format coach name with age group in parentheses
+                coach_with_age = coach_name
+                if coach_name and age_group:
+                    coach_with_age = f"{coach_name} ({age_group})"
+                elif coach_name:
+                    coach_with_age = coach_name
+                elif age_group:
+                    coach_with_age = f"({age_group})"
+
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
                     member.get(column_mapping.get('name'), ''),
-                    location_display
+                    location_display,
+                    coach_with_age
                 ])
             else:
-                row.extend(["", "", ""])
+                row.extend(["", "", "", ""])
         # Add extra info for the first member
         member = group[0]
         row.extend([
@@ -2290,7 +2507,6 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             member.get(column_mapping.get('province'), ''),
             member.get(column_mapping.get('city'), ''),
             member.get(column_mapping.get('state'), ''),
-            member.get(column_mapping.get('temporary_team_name'), ''),
             member.get(column_mapping.get('previous_coach_name'), '')
         ])
         ws.append(row)
@@ -2298,10 +2514,14 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         for i in range(7):
             if i < len(group):
                 member = group[i]
-                gender_pref = member.get(column_mapping.get('gender_preference'), '')
-                kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+                gender_pref = safe_get_value(member, column_mapping.get('gender_preference', ''), '')
+                kaizen_client_type = safe_get_value(member, column_mapping.get('kaizen_client_type', ''), '')
+                sex = safe_get_value(member, column_mapping.get('sex', ''), '')
+                gender_identity = safe_get_value(member, column_mapping.get('gender_identity', ''), '')
+                has_accountability_buddies = safe_get_value(member, column_mapping.get('has_accountability_buddies', ''), '')
+                current_goal = safe_get_value(member, column_mapping.get('current_goal', ''), '')
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
     
     # Write grouped participants
     # Track regular groups with 5 or more members for highlighting
@@ -2312,20 +2532,33 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             members = sorted(members, key=lambda m: (
                 m.get(column_mapping.get('user_id'), ''),
                 m.get(column_mapping.get('name'), ''),
-                m.get(column_mapping.get('city'), '')
+                m.get(column_mapping.get('city'), ''),
+                m.get(column_mapping.get('previous_coach_name'), '')
             ))
         row = [group_name]
         for i in range(7):
             if i < len(members):
                 member = members[i]
                 location_display = format_location_display(member, column_mapping)
+                coach_name = safe_get_value(member, column_mapping.get('previous_coach_name', ''), '')
+                age_group = safe_get_value(member, column_mapping.get('age_group', ''), '')
+                # Format coach name with age group in parentheses
+                coach_with_age = coach_name
+                if coach_name and age_group:
+                    coach_with_age = f"{coach_name} ({age_group})"
+                elif coach_name:
+                    coach_with_age = coach_name
+                elif age_group:
+                    coach_with_age = f"({age_group})"
+
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
                     member.get(column_mapping.get('name'), ''),
-                    location_display
+                    location_display,
+                    coach_with_age
                 ])
             else:
-                row.extend(["", "", ""])
+                row.extend(["", "", "", ""])
         # Add extra info for the first member
         member = members[0]
         row.extend([
@@ -2337,7 +2570,6 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             member.get(column_mapping.get('province'), ''),
             member.get(column_mapping.get('city'), ''),
             member.get(column_mapping.get('state'), ''),
-            member.get(column_mapping.get('temporary_team_name'), ''),
             member.get(column_mapping.get('previous_coach_name'), '')
         ])
         ws.append(row)
@@ -2373,11 +2605,14 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         for i in range(7):
             if i < len(members):
                 member = members[i]
-                gender_pref = member.get(column_mapping.get('gender_preference'), '')
-                kaizen_client_type = member.get(column_mapping.get('kaizen_client_type'), '')
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*3), member.get(column_mapping.get('gender_identity'), ''))
-                # Apply bold to name if same_gender preference, dark red if team_member
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*3), member.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+                gender_pref = safe_get_value(member, column_mapping.get('gender_preference', ''), '')
+                kaizen_client_type = safe_get_value(member, column_mapping.get('kaizen_client_type', ''), '')
+                sex = safe_get_value(member, column_mapping.get('sex', ''), '')
+                gender_identity = safe_get_value(member, column_mapping.get('gender_identity', ''), '')
+                has_accountability_buddies = safe_get_value(member, column_mapping.get('has_accountability_buddies', ''), '')
+                current_goal = safe_get_value(member, column_mapping.get('current_goal', ''), '')
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
     
     # Apply highlighting to regular groups with 5 or more members and same location
     if regular_group_row_indices:
@@ -2393,16 +2628,27 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             
             # Add user data
             location_display = format_location_display(user, column_mapping)
-            
+            coach_name = safe_get_value(user, column_mapping.get('previous_coach_name', ''), '')
+            age_group = safe_get_value(user, column_mapping.get('age_group', ''), '')
+            # Format coach name with age group in parentheses
+            coach_with_age = coach_name
+            if coach_name and age_group:
+                coach_with_age = f"{coach_name} ({age_group})"
+            elif coach_name:
+                coach_with_age = coach_name
+            elif age_group:
+                coach_with_age = f"({age_group})"
+
             row.extend([
                 user.get(column_mapping.get('user_id'), ''),
                 user.get(column_mapping.get('name'), ''),
-                location_display
+                location_display,
+                coach_with_age
             ])
-            
+
             # Add empty cells for remaining slots (to fill up to 7 members)
             for i in range(6):  # 6 more slots (total 7)
-                row.extend(["", "", ""])
+                row.extend(["", "", "", ""])
             
             # Add extra info
             row.extend([
@@ -2414,7 +2660,6 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 user.get(column_mapping.get('province'), ''),
                 user.get(column_mapping.get('city'), ''),
                 user.get(column_mapping.get('state'), ''),
-                user.get(column_mapping.get('temporary_team_name'), ''),
                 user.get(column_mapping.get('previous_coach_name'), '')
             ])
             
@@ -2423,8 +2668,12 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             # Apply formatting (treat as solo)
             gender_pref = user.get(column_mapping.get('gender_preference'), '')
             kaizen_client_type = user.get(column_mapping.get('kaizen_client_type'), '')
-            apply_color_to_cell(ws.cell(row=ws.max_row, column=2), user.get(column_mapping.get('gender_identity'), ''))
-            apply_color_to_cell(ws.cell(row=ws.max_row, column=3), user.get(column_mapping.get('gender_identity'), ''), gender_pref, kaizen_client_type)
+            sex = user.get(column_mapping.get('sex'), '')
+            gender_identity = user.get(column_mapping.get('gender_identity'), '')
+            has_accountability_buddies = user.get(column_mapping.get('has_accountability_buddies'), '')
+            current_goal = user.get(column_mapping.get('current_goal'), '')
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=2), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=3), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
     
     # Check if filename_or_buffer is a string (file path) or BytesIO buffer
     if isinstance(filename_or_buffer, str):
@@ -2434,7 +2683,26 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
         wb.save(filename_or_buffer)
 
 def main():
-    # Read the merged Excel file
+    """
+    MAIN EXECUTION FUNCTION - Complete group assignment pipeline.
+
+    WORKFLOW:
+    1. Load merged participant data (Excel/CSV format)
+    2. Dynamically detect and map column names
+    3. Sort data for consistent processing order
+    4. Execute 5-phase grouping algorithm:
+       - Accountability buddies (graph-based clustering)
+       - Solo participants (user choice)
+       - Priority same-gender groups (females first, 5-member target, same location)
+       - Regular groups (gender + geography algorithm for remaining)
+       - Small group optimization
+    5. Generate comprehensive diagnostic reports
+    6. Export results to formatted Excel file
+
+    INPUT: Merged participant data file (update INPUT_FILE path)
+    OUTPUT: Excel file with organized groups, color coding, and metadata
+    """
+    # Load input data - supports both Excel and CSV formats
     try:
         df = pd.read_excel(INPUT_FILE, sheet_name='Merged Data')
         print(f"✅ Successfully read input file with {len(df)} records")
@@ -2480,5 +2748,11 @@ def main():
     print(f"\n✅ Group assignment completed successfully!")
     print(f"📁 Results saved to: {OUTPUT_FILE}")
 
+# ============================================================================
+# EXECUTION ENTRY POINT
+# ============================================================================
+
 if __name__ == "__main__":
+    # Execute the complete participant grouping pipeline
+    # Update INPUT_FILE path in configuration section to point to your merged data file
     main() 

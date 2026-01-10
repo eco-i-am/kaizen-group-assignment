@@ -39,10 +39,12 @@ kaizen-group-assignment/
 ├── app.py                         # 🖥️ Web UI (Streamlit)
 ├── run_ui.py                     # 🚀 UI launcher script
 ├── group_assignment_to_excel.py   # Main grouping engine
+├── user_list_to_excel.py          # 📋 Simple user list generator (4 columns)
 ├── generate_additional_records.py # Test data generator
 ├── analyze_scenarios.py           # Data analysis tool
 ├── participants.csv               # Input participant data
 ├── grouped_participants.xlsx     # Output grouped results
+├── user_list.xlsx                # 📋 Simple user list output
 ├── requirements.txt              # Python dependencies
 └── README.md                    # This file
 ```
@@ -76,9 +78,43 @@ python group_assignment_to_excel.py
 ```
 
 This will:
-- Read participant data from `participants.csv`
-- Apply the grouping algorithm
-- Generate `grouped_participants.xlsx` with results
+- Read participant data from merged Excel file
+- Apply the grouping algorithm with 4-column member format (User ID, Name, Location, Coach and Age)
+- Generate `grouped_participants.xlsx` with advanced formatting:
+  - 🔵 Blue/Pink fill colors based on biological sex
+  - 🟢 Green fill for User IDs with "get_bigger" goal
+  - 🍷 Maroon font for LGBTQ+ participants
+  - **Bold text** for same_gender preference
+  - <u>Underlined text</u> for accountability buddies
+
+### User List Generator
+
+Generate a simple Excel file with all users listed in 4 columns with color coding and formatting:
+```bash
+python user_list_to_excel.py
+```
+
+This creates `user_list.xlsx` with:
+- **User ID**: Unique participant identifier
+- **Name**: Participant's full name (with special formatting based on client type)
+- **Location**: Formatted location (City, Province for Philippines; City, State, Country for international)
+- **Coach and Age**: Previous coach assignment with age group in parentheses
+
+**Color Coding:**
+- 🔵 **Blue fill**: Male participants (User ID and Name columns)
+- 🔴 **Pink fill**: Female participants (User ID and Name columns)
+- 🍷 **Maroon font**: LGBTQ+ participants
+- 🟢 **Light green fill**: User IDs when `currentGoal = "get_bigger"`
+
+**Text Formatting:**
+- **Bold text**: Users with `groupGenderPreference = "same_gender"` (User ID, Name, Location columns)
+- <u>**Underlined text**</u>: Users with accountability buddies (User ID, Name, Location columns)
+- **Name prefixes/suffixes**:
+  - **team_member**: `**Name` (double asterisk prefix)
+  - **returning_s7**: `Name*` (single asterisk suffix)
+  - **returning_other**: `Name**` (double asterisk suffix)
+
+**Available in Web UI**: Use the "📋 User List" page in the Streamlit interface.
 
 ### Input Data Format
 

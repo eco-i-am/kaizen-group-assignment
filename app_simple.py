@@ -10,6 +10,29 @@ import json
 # Import the grouping logic from the existing script
 from group_assignment_to_excel import group_participants, save_to_excel, find_column_mapping
 
+def get_available_data():
+    """Get data from any available source in the session state"""
+    # Check for different possible data sources in order of preference
+    if 'participants_data' in st.session_state:
+        data = st.session_state.participants_data
+    elif 'merged_data' in st.session_state:
+        data = st.session_state.merged_data
+    elif 'all_api_records' in st.session_state:
+        data = st.session_state.all_api_records
+    elif 'api_data' in st.session_state and isinstance(st.session_state.api_data, dict) and 'data' in st.session_state.api_data:
+        data = st.session_state.api_data['data']
+    else:
+        return None
+
+    # Convert data to DataFrame if it's not already
+    if not isinstance(data, pd.DataFrame):
+        try:
+            data = pd.DataFrame(data)
+        except Exception:
+            return None
+
+    return data
+
 def format_location_display(member, column_mapping):
     """Format location display based on residing_ph status"""
     residing_ph = str(member.get(column_mapping.get('residing_ph'), '0')).strip().lower()
@@ -190,199 +213,82 @@ def main():
         st.header("📋 Navigation")
         page = st.selectbox(
             "Choose a page:",
-            ["📊 Dashboard", "📁 Upload Data", "👥 Create Groups", "📈 Analysis", "🔗 API Data", "⚙️ Settings"]
+            ["🔗 API Data", "📁 Data Management", "📈 Analysis", "⚙️ Settings"]
         )
         
         st.markdown("---")
         st.markdown("### 📊 Quick Stats")
-        if 'participants_data' in st.session_state:
-            data = st.session_state.participants_data
+        data = get_available_data()
+        if data is not None:
             st.metric("Total Participants", len(data))
-            st.metric("Solo Participants", len(data[data['go_solo'] == 1]))
-            st.metric("Group Participants", len(data[data['go_solo'] == 0]))
+            try:
+                solo_count = len(data[data['go_solo'] == 1]) if 'go_solo' in data.columns else 0
+                st.metric("Solo Participants", solo_count)
+                group_count = len(data[data['go_solo'] == 0]) if 'go_solo' in data.columns else len(data)
+                st.metric("Group Participants", group_count)
+            except:
+                st.metric("Data Loaded", "✅")
         else:
-            st.info("Upload data to see statistics")
+            st.info("Upload or fetch data to see statistics")
     
     # Page routing
-    if page == "📊 Dashboard":
-        show_dashboard()
-    elif page == "📁 Upload Data":
-        show_upload_page()
-    elif page == "👥 Create Groups":
-        show_grouping_page()
+    if page == "🔗 API Data":
+        show_api_page()
+    elif page == "📁 Data Management":
+        show_data_management_page()
     elif page == "📈 Analysis":
         show_analysis_page()
-    elif page == "🔗 API Data":
-        show_api_page()
     elif page == "⚙️ Settings":
         show_settings_page()
 
-def show_dashboard():
-    st.header("📊 Dashboard")
-    
-    if 'participants_data' not in st.session_state:
-        st.warning("Please upload participant data first!")
-        st.info("Go to 'Upload Data' page to get started.")
-        return
-    
-    data = st.session_state.participants_data
-    
-    # Show download options if groups exist
-    if 'solo_groups' in st.session_state and 'grouped' in st.session_state:
-        st.subheader("📤 Download Results")
-        st.info("Groups have been created! You can download the results here.")
-        column_mapping = st.session_state.get('column_mapping', None)
-        create_download_buttons(st.session_state.solo_groups, st.session_state.grouped, column_mapping)
-        st.markdown("---")
-    
-    # Key metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Participants", len(data))
-    
-    with col2:
-        solo_count = len(data[data['go_solo'] == 1])
-        st.metric("Solo Participants", solo_count)
-    
-    with col3:
-        group_count = len(data[data['go_solo'] == 0])
-        st.metric("Group Participants", group_count)
-    
-    with col4:
-        ph_count = len(data[data['residing_in_philippines'] == 1])
-        st.metric("Philippines Residents", ph_count)
-    
-    # Data overview
-    st.subheader("📋 Data Overview")
-    st.dataframe(data.head(10), use_container_width=True)
-    
-    # Simple statistics
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📊 Gender Distribution")
-        gender_counts = data['gender_identity'].value_counts()
-        for gender, count in gender_counts.items():
-            st.write(f"**{gender}:** {count} participants")
-    
-    with col2:
-        st.subheader("🌍 Geographic Distribution")
-        
-        # Show top countries
-        country_counts = data['country'].value_counts().head(5)
-        st.write("**Top Countries:**")
-        for country, count in country_counts.items():
-            st.write(f"- {country}: {count} participants")
-        
-        # Show Philippines provinces if available
-        ph_data = data[data['residing_in_philippines'] == 1]
-        if len(ph_data) > 0 and 'province' in ph_data.columns:
-            st.write("**Philippines Provinces:**")
-            province_counts = ph_data['province'].value_counts().head(5)
-            for province, count in province_counts.items():
-                if province and str(province).lower() != 'nan':
-                    st.write(f"- {province}: {count} participants")
-
 def show_upload_page():
     st.header("📁 Upload Participant Data")
-    
-    # File type selection
-    file_type = st.radio(
-        "Choose file type:",
-        ["CSV File", "Excel File (Merged Data)"],
-        help="Select the type of file you want to upload"
+
+    st.markdown("""
+    ### Upload your merged Excel file
+    The system supports Excel files with merged user and grouping preference data.
+    The file should contain a "Merged Data" sheet with columns like:
+    - `user_id`, `full_name`, `gender_identity`, `biological_sex`
+    - `residing_in_philippines`, `grouping_preference`, `country`
+    - `state_province`, `city`, `region`, `prefer_solo`
+
+    **Note:** The system will automatically detect column names and map them appropriately.
+    """)
+
+    uploaded_file = st.file_uploader(
+        "Choose an Excel file",
+        type=['xlsx', 'xls'],
+        help="Upload an Excel file with merged data (should have 'Merged Data' sheet)"
     )
-    
-    if file_type == "CSV File":
-        st.markdown("""
-        ### Upload your participant data file
-        The system supports CSV files with the following required columns:
-        - `user_id`: Unique participant identifier
-        - `gender_identity`: Gender identity (Male, Female, LGBTQ+)
-        - `sex`: Biological sex (Male, Female)
-        - `residing_in_philippines`: Location indicator (1 for PH, 0 for International)
-        - `group_gender_preference`: Grouping preference (same_gender, no_preference)
-        - `country`: Country of residence
-        - `province`: Province/State
-        - `city`: City
-        - `state`: State (for international participants)
-        - `go_solo`: Solo preference (1 for solo, 0 for group)
-        """)
-        
-        uploaded_file = st.file_uploader(
-            "Choose a CSV file",
-            type=['csv'],
-            help="Upload a CSV file with participant data"
-        )
-    else:
-        st.markdown("""
-        ### Upload your merged Excel file
-        The system supports Excel files with merged user and grouping preference data.
-        The file should contain a "Merged Data" sheet with columns like:
-        - `user_id`, `full_name`, `gender_identity`, `biological_sex`
-        - `residing_in_philippines`, `grouping_preference`, `country`
-        - `state_province`, `city`, `region`, `prefer_solo`
-        
-        **Note:** The system will automatically detect column names and map them appropriately.
-        """)
-        
-        uploaded_file = st.file_uploader(
-            "Choose an Excel file",
-            type=['xlsx', 'xls'],
-            help="Upload an Excel file with merged data (should have 'Merged Data' sheet)"
-        )
     
     if uploaded_file is not None:
         try:
-            if file_type == "CSV File":
-                # Read the CSV file
-                data = pd.read_csv(uploaded_file)
-                
-                # Validate required columns
-                required_columns = [
-                    'user_id', 'gender_identity', 'sex', 'residing_in_philippines',
-                    'group_gender_preference', 'country', 'province', 'city', 'state', 'go_solo'
-                ]
-                
-                missing_columns = [col for col in required_columns if col not in data.columns]
-                
-                if missing_columns:
-                    st.error(f"Missing required columns: {', '.join(missing_columns)}")
-                    st.info("Please ensure your CSV file contains all required columns.")
-                    return
-                
-                # Store data in session state
-                st.session_state.participants_data = data
-                data_source = "CSV"
-                
-            else:
-                # Read the Excel file
-                try:
-                    data = pd.read_excel(uploaded_file, sheet_name='Merged Data')
-                except Exception as e:
-                    st.error(f"Could not read 'Merged Data' sheet: {str(e)}")
-                    st.info("Please ensure your Excel file has a 'Merged Data' sheet.")
-                    return
-                
-                # Find column mapping
-                column_mapping = find_column_mapping(data)
-                
-                # Check for essential columns using flexible mapping
-                essential_fields = ['user_id', 'gender_identity', 'gender_preference']
-                missing_essential = [field for field in essential_fields if not column_mapping.get(field)]
-                
-                if missing_essential:
-                    detected_cols = ', '.join(list(data.columns))
-                    st.error(f"Missing essential columns: {', '.join(missing_essential)}")
-                    st.info(f"Please ensure your Excel file contains columns for user_id, gender_identity, and gender_preference.\nDetected columns: {detected_cols}")
-                    st.info("The system accepts alternative column names such as 'genderPref', 'goSolo', etc. See documentation for details.")
-                    return
-                
-                # Store data in session state
-                st.session_state.merged_data = data
-                st.session_state.column_mapping = column_mapping
-                data_source = "Merged Excel"
+            # Read the Excel file
+            try:
+                data = pd.read_excel(uploaded_file, sheet_name='Merged Data')
+            except Exception as e:
+                st.error(f"Could not read 'Merged Data' sheet: {str(e)}")
+                st.info("Please ensure your Excel file has a 'Merged Data' sheet.")
+                return
+
+            # Find column mapping
+            column_mapping = find_column_mapping(data)
+
+            # Check for essential columns using flexible mapping
+            essential_fields = ['user_id', 'gender_identity', 'gender_preference']
+            missing_essential = [field for field in essential_fields if not column_mapping.get(field)]
+
+            if missing_essential:
+                detected_cols = ', '.join(list(data.columns))
+                st.error(f"Missing essential columns: {', '.join(missing_essential)}")
+                st.info(f"Please ensure your Excel file contains columns for user_id, gender_identity, and gender_preference.\nDetected columns: {detected_cols}")
+                st.info("The system accepts alternative column names such as 'genderPref', 'goSolo', etc. See documentation for details.")
+                return
+
+            # Store data in session state
+            st.session_state.merged_data = data
+            st.session_state.column_mapping = column_mapping
+            data_source = "Merged Excel"
             
             # Show success message
             st.success("✅ Data uploaded successfully!")
@@ -392,15 +298,14 @@ def show_upload_page():
             st.subheader("📋 Data Preview")
             st.dataframe(data.head(), use_container_width=True)
             
-            # Show column mapping for Excel files
-            if file_type == "Excel File (Merged Data)":
-                st.subheader("🔍 Column Mapping")
-                with st.expander("View detected column mappings"):
-                    for key, value in column_mapping.items():
-                        if value:
-                            st.write(f"**{key}:** {value}")
-                        else:
-                            st.write(f"**{key}:** ❌ Not found")
+            # Show column mapping
+            st.subheader("🔍 Column Mapping")
+            with st.expander("View detected column mappings"):
+                for key, value in column_mapping.items():
+                    if value:
+                        st.write(f"**{key}:** {value}")
+                    else:
+                        st.write(f"**{key}:** ❌ Not found")
             
             # Show data statistics
             col1, col2 = st.columns(2)
@@ -455,10 +360,7 @@ def show_upload_page():
         
         except Exception as e:
             st.error(f"Error reading file: {str(e)}")
-            if file_type == "CSV File":
-                st.info("Please ensure the file is a valid CSV format.")
-            else:
-                st.info("Please ensure the file is a valid Excel format with a 'Merged Data' sheet.")
+            st.info("Please ensure the file is a valid Excel format with a 'Merged Data' sheet.")
 
 def show_grouping_page():
     st.header("👥 Create Groups")
@@ -740,14 +642,595 @@ def show_analysis_page():
         else:
             st.success("✅ No missing data found")
 
+def show_user_list_page():
+    """Page to generate and download a simple user list with 4 columns"""
+    st.header("📋 User List Generator")
+
+    st.markdown("""
+    ### Generate User List Excel
+    This page generates a simple Excel file containing all users with 4 key columns:
+    - **User ID**: Unique participant identifier
+    - **Name**: Participant's full name
+    - **Location**: Formatted location (City, Province for PH; City, State, Country for international)
+    - **Coach**: Previous coach assignment
+    """)
+
+    # Check if data is available from any source
+    data = get_available_data()
+    if data is None:
+        st.warning("⚠️ No data available. Please upload data using the 'Upload Data' page or fetch data using the 'API Data' page.")
+        return
+
+    # Determine data source for display
+    data_source = "Unknown"
+    if 'participants_data' in st.session_state:
+        data_source = "Uploaded Data"
+    elif 'merged_data' in st.session_state:
+        data_source = "Merged API Data"
+    elif 'all_api_records' in st.session_state:
+        data_source = "API Data"
+    elif 'api_data' in st.session_state:
+        data_source = "API Data"
+
+    st.info(f"📊 Found {len(data)} participants from {data_source}")
+
+    # Generate user list button
+    if st.button("🚀 Generate User List Excel", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Generating user list..."):
+                # Import the user list function
+                from user_list_to_excel import save_user_list_to_excel
+                from user_list_to_excel import find_column_mapping as find_column_mapping_user
+
+                # Convert data to list of dicts (same format as the Excel processing)
+                data_dicts = data.to_dict('records')
+
+                # Debug: Check for duplicates before processing
+                user_id_col = None
+                for col in data.columns:
+                    if col.lower() in ['id_y', 'id', 'userid', 'user_id']:
+                        user_id_col = col
+                        break
+
+                if user_id_col:
+                    user_ids = data[user_id_col].dropna().astype(str).str.strip()
+                    duplicate_count = len(user_ids) - len(user_ids.unique())
+                    if duplicate_count > 0:
+                        st.warning(f"⚠️ Found {duplicate_count} duplicate user IDs in the data!")
+                        # Show some examples of duplicates
+                        duplicates = user_ids[user_ids.duplicated(keep=False)]
+                        if len(duplicates) > 0:
+                            st.info(f"Example duplicate IDs: {', '.join(duplicates.unique()[:5])}")
+                    else:
+                        st.info(f"✅ No duplicate user IDs found ({len(user_ids.unique())} unique users)")
+                else:
+                    st.warning("⚠️ Could not find user ID column to check for duplicates")
+
+                # Find column mapping
+                column_mapping = find_column_mapping_user(data)
+
+                # Create BytesIO buffer for download
+                import io
+                buffer = io.BytesIO()
+
+                # Generate the Excel file
+                save_user_list_to_excel(data_dicts, buffer, column_mapping)
+
+                buffer.seek(0)
+
+                st.success("✅ User list generated successfully!")
+
+                # Download button
+                st.download_button(
+                    label="📥 Download User List Excel",
+                    data=buffer,
+                    file_name="user_list.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True
+                )
+
+        except Exception as e:
+            st.error(f"❌ Error generating user list: {str(e)}")
+            st.error("Please check that all required columns are present in your data")
+
+    # Show column mapping info
+    st.subheader("📋 Column Mapping")
+    data_for_mapping = get_available_data()
+    if data_for_mapping is not None:
+        from user_list_to_excel import find_column_mapping as find_column_mapping_user
+        column_mapping = find_column_mapping_user(data_for_mapping)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**Required Columns:**")
+            required_cols = ['user_id', 'name', 'residing_ph', 'city', 'province', 'state', 'country', 'previous_coach_name']
+            for col in required_cols:
+                status = "✅" if column_mapping.get(col) else "❌"
+                mapped_to = f" → {column_mapping.get(col, 'Not found')}" if column_mapping.get(col) else ""
+                st.write(f"{status} {col}{mapped_to}")
+
+        with col2:
+            st.markdown("**Optional Columns:**")
+            optional_cols = ['gender_identity', 'sex', 'gender_preference', 'email', 'temporary_team_name']
+            for col in optional_cols:
+                status = "✅" if column_mapping.get(col) else "⚪"
+                mapped_to = f" → {column_mapping.get(col, 'Not found')}" if column_mapping.get(col) else ""
+                st.write(f"{status} {col}{mapped_to}")
+
+def show_data_management_page():
+    """Combined page for Upload Data, User List, and Create Groups"""
+
+    # Upload Data Section
+    st.header("📁 Upload Data")
+
+    st.markdown("""
+    ### Upload your merged Excel file
+    The system supports Excel files with merged user and grouping preference data.
+    The file should contain a "Merged Data" sheet with columns like:
+    - `user_id`, `full_name`, `gender_identity`, `biological_sex`
+    - `residing_in_philippines`, `grouping_preference`, `country`
+    - `state_province`, `city`, `region`, `prefer_solo`
+
+    **Note:** The system will automatically detect column names and map them appropriately.
+    """)
+
+    uploaded_file = st.file_uploader(
+        "Choose an Excel file",
+        type=['xlsx', 'xls'],
+        help="Upload an Excel file with merged data (should have 'Merged Data' sheet)"
+    )
+
+    if uploaded_file is not None:
+        try:
+            # Read the Excel file
+            try:
+                data = pd.read_excel(uploaded_file, sheet_name='Merged Data')
+            except Exception as e:
+                st.error(f"Could not read 'Merged Data' sheet: {str(e)}")
+                st.info("Please ensure your Excel file has a 'Merged Data' sheet.")
+                return
+
+            # Find column mapping
+            column_mapping = find_column_mapping(data)
+
+            # Check for essential columns using flexible mapping
+            essential_fields = ['user_id', 'gender_identity', 'gender_preference']
+            missing_essential = [field for field in essential_fields if not column_mapping.get(field)]
+
+            if missing_essential:
+                detected_cols = ', '.join(list(data.columns))
+                st.error(f"Missing essential columns: {', '.join(missing_essential)}")
+                st.info(f"Please ensure your Excel file contains columns for user_id, gender_identity, and gender_preference.\nDetected columns: {detected_cols}")
+                st.info("The system accepts alternative column names such as 'genderPref', 'goSolo', etc. See documentation for details.")
+                return
+
+            # Store data in session state
+            st.session_state.merged_data = data
+            st.session_state.column_mapping = column_mapping
+            data_source = "Merged Excel"
+
+            # Show success message
+            st.success("✅ Data uploaded successfully!")
+            st.info(f"Loaded {len(data)} participants from {data_source}")
+
+            # Show data preview
+            st.subheader("📋 Data Preview")
+            st.dataframe(data.head(), use_container_width=True)
+
+            # Show column mapping
+            st.subheader("🔍 Column Mapping")
+            with st.expander("View detected column mappings"):
+                for key, value in column_mapping.items():
+                    if value:
+                        st.write(f"**{key}:** {value}")
+                    else:
+                        st.write(f"**{key}:** ❌ Not found")
+
+        except Exception as e:
+            st.error(f"Error reading file: {str(e)}")
+            st.info("Please ensure the file is a valid Excel format with a 'Merged Data' sheet.")
+
+    st.markdown("---")
+
+    # User List Section
+    st.header("📋 User List")
+
+    st.markdown("""
+    Generate a comprehensive Excel file with all user information. This includes participant details,
+    formatted names, locations, coaches, and visual formatting based on various criteria.
+    """)
+
+    # Determine data source for display
+    data_source = "Unknown"
+    if 'participants_data' in st.session_state:
+        data_source = "Uploaded Data"
+    elif 'merged_data' in st.session_state:
+        data_source = "Merged API Data"
+    elif 'all_api_records' in st.session_state:
+        data_source = "API Data"
+    elif 'api_data' in st.session_state:
+        data_source = "API Data"
+
+    data = get_available_data()
+    if data is not None:
+        st.info(f"📊 Found {len(data)} participants from {data_source}")
+
+        # Generate user list button
+        if st.button("🚀 Generate User List Excel", type="primary", use_container_width=True):
+            try:
+                with st.spinner("Generating user list..."):
+                    # Import the user list function
+                    from user_list_to_excel import save_user_list_to_excel
+                    from user_list_to_excel import find_column_mapping as find_column_mapping_user
+
+                    # Convert data to list of dicts (same format as the Excel processing)
+                    data_dicts = data.to_dict('records')
+
+                    # Debug: Check for duplicates before processing
+                    user_id_col = None
+                    for col in data.columns:
+                        if col.lower() in ['id_y', 'id', 'userid', 'user_id']:
+                            user_id_col = col
+                            break
+
+                    if user_id_col:
+                        user_ids = data[user_id_col].dropna().astype(str).str.strip()
+                        duplicate_count = len(user_ids) - len(user_ids.unique())
+                        if duplicate_count > 0:
+                            st.warning(f"⚠️ Found {duplicate_count} duplicate user IDs in the data!")
+                            # Show some examples of duplicates
+                            duplicates = user_ids[user_ids.duplicated(keep=False)]
+                            if len(duplicates) > 0:
+                                st.info(f"Example duplicate IDs: {', '.join(duplicates.unique()[:5])}")
+                        else:
+                            st.info(f"✅ No duplicate user IDs found ({len(user_ids.unique())} unique users)")
+                    else:
+                        st.warning("⚠️ Could not find user ID column to check for duplicates")
+
+                    # Find column mapping
+                    column_mapping = find_column_mapping_user(data)
+
+                    # Create BytesIO buffer for download
+                    import io
+                    buffer = io.BytesIO()
+
+                    # Generate the Excel file
+                    save_user_list_to_excel(data_dicts, buffer, column_mapping)
+
+                    buffer.seek(0)
+
+                    st.success("✅ User list generated successfully!")
+
+                    # Download button
+                    st.download_button(
+                        label="📥 Download User List Excel",
+                        data=buffer,
+                        file_name="user_list.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        use_container_width=True
+                    )
+
+            except Exception as e:
+                st.error(f"Error generating user list: {str(e)}")
+                st.info("Please check your data format and try again.")
+    else:
+        st.warning("⚠️ No data available. Please upload data first using the 'Upload Data' section above or fetch from API.")
+
+    st.markdown("---")
+
+    # Create Groups Section
+    st.header("👥 Create Groups")
+
+    # Check for different data sources
+    has_csv_data = 'participants_data' in st.session_state
+    has_merged_data = 'merged_data' in st.session_state
+
+    if not has_csv_data and not has_merged_data:
+        st.warning("Please upload participant data first!")
+        st.info("Go to 'Upload Data' or 'API Data' section above to get started.")
+        return
+
+    # Data source selection (only if both are available)
+    if has_csv_data and has_merged_data:
+        data_source = st.radio(
+            "Choose data source:",
+            ["Merged API Data", "Uploaded Data"],
+            help="Select which dataset to use for group creation"
+        )
+    elif has_csv_data:
+        data_source = "Uploaded Data"
+    else:
+        data_source = "Merged API Data"
+
+    # Get the appropriate data
+    if data_source == "Uploaded Data":
+        data = st.session_state.participants_data
+        data_format = "csv"
+    else:
+        data = st.session_state.merged_data
+        data_format = "excel"
+
+    # Display data info
+    st.info(f"📊 Using {data_source}: {len(data)} participants")
+
+    # Grouping parameters
+    col1, col2 = st.columns(2)
+
+    with col1:
+        max_group_size = st.slider(
+            "Maximum group size:",
+            min_value=3,
+            max_value=7,
+            value=5,
+            help="Maximum number of participants per group"
+        )
+
+    with col2:
+        merge_small_groups = st.checkbox(
+            "Merge small groups",
+            value=True,
+            help="Automatically merge groups with fewer than 4 members"
+        )
+
+    # Create groups button
+    if st.button("🚀 Create Groups", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Creating groups..."):
+                # Import the grouping function
+                from group_assignment_to_excel import group_participants, save_to_excel
+
+                # Convert data to list of dicts
+                data_dicts = data.to_dict('records')
+
+                # Find column mapping if not already available
+                if data_format == "excel" and 'column_mapping' in st.session_state:
+                    column_mapping = st.session_state.column_mapping
+                else:
+                    from user_list_to_excel import find_column_mapping as find_column_mapping_user
+                    column_mapping = find_column_mapping_user(data)
+
+                # Group participants
+                solo_groups, grouped, excluded_users, requested_groups, combined_group_info = group_participants(data_dicts, column_mapping)
+
+                # Create BytesIO buffer for download
+                import io
+                buffer = io.BytesIO()
+
+                # Save to Excel buffer
+                save_to_excel(solo_groups, grouped, buffer, column_mapping, excluded_users, requested_groups, combined_group_info)
+
+                buffer.seek(0)
+
+                # Store results in session state
+                st.session_state.grouping_results = {
+                    'solo_groups': solo_groups,
+                    'grouped': grouped,
+                    'excluded_users': excluded_users,
+                    'requested_groups': requested_groups
+                }
+
+                st.success("✅ Groups created successfully!")
+
+                # Show summary
+                total_groups = len(grouped) + len(solo_groups) + len(requested_groups)
+                st.info(f"📊 Created {total_groups} groups: {len(grouped)} regular, {len(solo_groups)} solo, {len(requested_groups)} requested")
+
+                # Download button
+                st.download_button(
+                    label="📥 Download Group Results Excel",
+                    data=buffer,
+                    file_name="grouped_participants.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True
+                )
+
+        except Exception as e:
+            st.error(f"Error creating groups: {str(e)}")
+            st.info("Please check your data format and try again.")
+
 def show_api_page():
+    import io
+    from datetime import datetime
+
     st.header("🔗 API Data")
-    
+
     st.markdown("""
     ### Fetch Grouping Preferences from Lazy Lifter API
     This page allows you to fetch and view grouping preferences data from the Lazy Lifter portal API.
     """)
-    
+
+    # Access token (shared for all operations)
+    access_token = st.text_input(
+        "🔑 Access Token",
+        value="joo9iL1wai8ii1koojaiy1ath3ooxahL7oaphoo1johPhaege8ieQuaGh0shiew0",
+        type="password",
+        help="Bearer token for API authentication"
+    )
+
+    # Comprehensive fetch and merge button (FIRST - AFTER TOKEN)
+    st.subheader("🔄 Complete Data Fetch & Merge")
+
+    st.markdown("""
+    **One-click solution**: Fetch all users, then fetch grouping preferences for Season 9,
+    merge the data, and download the complete merged Excel file.
+    """)
+
+    if st.button("🚀 Fetch & Merge All Data", type="primary", use_container_width=True):
+        try:
+            if not access_token or access_token.strip() == "":
+                st.error("❌ Please enter a valid access token.")
+                return
+
+            with st.spinner("Step 1/4: Fetching all users..."):
+                # Fetch all users
+                users_url = "https://portal.thelazylifter.com/api/users"
+                fetch_all_api_data(users_url, access_token, max_pages=500)
+                users_data = st.session_state.get('all_api_records', [])
+
+            with st.spinner("Step 2/4: Fetching grouping preferences..."):
+                # Fetch grouping preferences for season 9
+                grouping_url = "https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7"
+                fetch_all_api_data(grouping_url, access_token, max_pages=500)
+                grouping_data = st.session_state.get('all_api_records', [])
+
+            with st.spinner("Step 3/4: Merging data..."):
+                # Merge the data
+                if users_data and grouping_data:
+                    # Convert to DataFrames for merging
+                    users_df = pd.DataFrame(users_data)
+                    grouping_df = pd.DataFrame(grouping_data)
+
+                    # Perform merge on user field
+                    # First, check what fields are available for merging
+                    if 'id' in users_df.columns and any(col in grouping_df.columns for col in ['user', 'user_id']):
+                        # Find the user field in grouping data
+                        user_field = None
+                        for col in ['user', 'user_id', 'userid']:
+                            if col in grouping_df.columns:
+                                user_field = col
+                                break
+
+                        if user_field:
+                            # Handle different user field formats
+                            if user_field == 'user':
+                                # User field might be a URL like /api/users/123, extract the ID
+                                grouping_df['user_id'] = grouping_df['user'].astype(str).str.extract(r'/users/(\d+)').astype(float)
+                            elif user_field == 'user_id':
+                                grouping_df['user_id'] = grouping_df['user_id']
+
+                            # Merge with grouping preferences as left table (preserves all grouping preference rows)
+                            merged_df = pd.merge(grouping_df, users_df, left_on='user_id', right_on='id', how='left', suffixes=('_x', '_y'))
+
+                            # Reorder columns to match the requested format
+                            desired_columns = [
+                                '@id_x', '@type_x', 'id_x', 'user', 'program', 'genderIdentity',
+                                'kaizenClientType', 'createdAt_x', 'updatedAt', 'sex', 'residingInPhilippines',
+                                'liftingExperience', 'groupGenderPreference', 'currentGoal', 'followUpLevel',
+                                'accountabilityBuddies', 'province', 'city', 'goSolo', 'hasAccountabilityBuddies',
+                                'retainPreviousCoach', 'joiningAsStudent', 'ageGroup', 'previousCoachName',
+                                'country', 'locationIdentifier', 'internationalCity', 'internationalState',
+                                '@id_y', '@type_y', 'id_y', 'email', 'name', 'createdAt_y',
+                                'OnboardingTasksCompleted', 'firstName', 'lastName', 'nickname', 'guid',
+                                'trackers', 'enrolledPrograms'
+                            ]
+
+                            # Keep only columns that exist in the merged dataframe
+                            final_columns = [col for col in desired_columns if col in merged_df.columns]
+                            merged_df = merged_df[final_columns]
+
+                            # Store merged data
+                            st.session_state.merged_data = merged_df
+                            st.session_state.column_mapping = {}  # Will be set when needed
+
+                            st.success(f"✅ Data merged successfully! Users: {len(users_df)}, Grouping: {len(grouping_df)}, Merged: {len(merged_df)}")
+
+                        else:
+                            st.error("❌ Could not find user field in grouping data for merging")
+                            return
+                    else:
+                        st.error("❌ Required fields not found for merging (users.id or grouping.user)")
+                        return
+                else:
+                    st.error("❌ Failed to fetch both users and grouping data")
+                    return
+
+            with st.spinner("Step 4/4: Creating merged Excel file..."):
+                # Create Excel file with multiple sheets like the manual process
+                import io
+                from datetime import datetime
+
+                # Store merged data in session state for group creation
+                st.session_state.merged_data = merged_df
+
+                # Normalize data types to prevent display issues (same as manual process)
+                for df in [users_df, grouping_df, merged_df]:
+                    for col in df.columns:
+                        try:
+                            df[col] = df[col].apply(lambda x: str(x) if isinstance(x, (list, dict, tuple)) or pd.isna(x) else x)
+                            df[col] = df[col].astype(str)
+                        except:
+                            df[col] = "Data conversion error"
+
+                # Clean accountabilityBuddies field (same as manual process)
+                if 'accountabilityBuddies' in merged_df.columns:
+                    if 'hasAccountabilityBuddies' in merged_df.columns:
+                        merged_df['hasAccountabilityBuddies'] = merged_df['hasAccountabilityBuddies'].astype(str).str.lower()
+                        mask = merged_df['hasAccountabilityBuddies'].isin(['false', '0', '0.0', 'no'])
+                        merged_df.loc[mask, 'accountabilityBuddies'] = ''
+
+                    def clean_accountability_buddies(value):
+                        if pd.isna(value) or value == 'None' or value == 'nan':
+                            return ''
+                        if isinstance(value, str):
+                            if value == '[None, None]' or value == '[None]' or value == "{'1': None}":
+                                return ''
+                            cleaned = value.strip('[]').replace('"', '').replace("'", '')
+                            if cleaned == '' or cleaned == 'None':
+                                return ''
+                            emails = [email.strip() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                            if not emails:
+                                return ''
+                            return value
+                        return value
+
+                    merged_df['accountabilityBuddies'] = merged_df['accountabilityBuddies'].apply(clean_accountability_buddies)
+
+                # Create Excel file with multiple sheets (same as manual process)
+                buffer = io.BytesIO()
+
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    # Main merged data
+                    merged_df.to_excel(writer, sheet_name='Merged Data', index=False)
+
+                    # Individual datasets
+                    users_df.to_excel(writer, sheet_name='Users Data', index=False)
+                    grouping_df.to_excel(writer, sheet_name='Grouping Preferences', index=False)
+
+                    # Summary sheet
+                    summary_data = {
+                        'Metric': ['Total Records', 'Users Data', 'Grouping Preferences', 'Merged Records'],
+                        'Count': [len(merged_df), len(users_df), len(grouping_df), len(merged_df)]
+                    }
+                    summary_df = pd.DataFrame(summary_data)
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+                buffer.seek(0)
+
+                st.success(f"✅ Successfully merged data! Result: {len(merged_df)} records")
+
+                # Show merged data info (same as manual process)
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Records", len(merged_df))
+                with col2:
+                    st.metric("Users Data", len(users_df))
+                with col3:
+                    st.metric("Grouping Preferences", len(grouping_df))
+
+                # Download button (same as manual process)
+                st.download_button(
+                    label="📥 Download Merged Excel File",
+                    data=buffer.getvalue(),
+                    file_name=f"merged_users_grouping_preferences_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+                # Show preview of merged data (same as manual process)
+                st.subheader("📊 Merged Data Preview")
+                st.dataframe(merged_df.head(10), use_container_width=True)
+
+        except Exception as e:
+            st.error(f"❌ Error during fetch and merge: {str(e)}")
+            import traceback
+            st.error(f"Details: {traceback.format_exc()}")
+
+    st.markdown("---")
+
     # API Configuration
     st.subheader("🔧 API Configuration")
     
@@ -756,6 +1239,7 @@ def show_api_page():
         "Choose API Endpoint",
         [
             "Grouping Preferences",
+            "Contexts Grouping Preference",
             "Users",
             "Custom URL"
         ],
@@ -764,7 +1248,9 @@ def show_api_page():
     
     # Set API URL based on selection
     if api_endpoint == "Grouping Preferences":
-        api_url = "https://portal.thelazylifter.com/api/grouping_preferences"
+        api_url = "https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7"
+    elif api_endpoint == "Contexts Grouping Preference":
+        api_url = "https://portal.thelazylifter.com/api/contexts/GroupingPreference"
     elif api_endpoint == "Users":
         api_url = "https://portal.thelazylifter.com/api/users"
     else:
@@ -773,15 +1259,7 @@ def show_api_page():
             value="https://portal.thelazylifter.com/api/grouping_preferences",
             help="Enter custom API endpoint URL"
         )
-    
-    # Access token
-    access_token = st.text_input(
-        "Access Token",
-        value="joo9iL1wai8ii1koojaiy1ath3ooxahL7oaphoo1johPhaege8ieQuaGh0shiew0",
-        type="password",
-        help="Bearer token for API authentication"
-    )
-    
+
     # Fetch options
     st.subheader("📊 Fetch Data")
     
@@ -800,12 +1278,183 @@ def show_api_page():
     
     with col2:
         if st.button("📚 Fetch All Pages", type="secondary", use_container_width=True):
-            fetch_all_api_data(api_url, access_token)
+            fetch_all_api_data(api_url, access_token, max_pages=20)
     
     # Test connection
     if st.button("🔍 Test API Connection", type="secondary", use_container_width=True):
         test_api_connection(api_url, access_token, page_number)
-    
+
+
+    if st.button("🚀 Fetch & Merge All Data", type="primary", use_container_width=True, key="duplicate_fetch_merge_button"):
+        try:
+            if not access_token or access_token.strip() == "":
+                st.error("❌ Please enter a valid access token.")
+                return
+
+            with st.spinner("Step 1/4: Fetching all users..."):
+                # Fetch all users
+                users_url = "https://portal.thelazylifter.com/api/users"
+                fetch_all_api_data(users_url, access_token, max_pages=500)
+                users_data = st.session_state.get('all_api_records', [])
+
+            with st.spinner("Step 2/4: Fetching grouping preferences..."):
+                # Fetch grouping preferences for season 9
+                grouping_url = "https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7"
+                fetch_all_api_data(grouping_url, access_token, max_pages=500)
+                grouping_data = st.session_state.get('all_api_records', [])
+
+            with st.spinner("Step 3/4: Merging data..."):
+                # Merge the data
+                if users_data and grouping_data:
+                    # Convert to DataFrames for merging
+                    users_df = pd.DataFrame(users_data)
+                    grouping_df = pd.DataFrame(grouping_data)
+
+                    # Perform merge on user field
+                    # First, check what fields are available for merging
+                    if 'id' in users_df.columns and any(col in grouping_df.columns for col in ['user', 'user_id']):
+                        # Find the user field in grouping data
+                        user_field = None
+                        for col in ['user', 'user_id', 'userid']:
+                            if col in grouping_df.columns:
+                                user_field = col
+                                break
+
+                        if user_field:
+                            # Handle different user field formats
+                            if user_field == 'user':
+                                # User field might be a URL like /api/users/123, extract the ID
+                                grouping_df['user_id'] = grouping_df['user'].astype(str).str.extract(r'/users/(\d+)').astype(float)
+                            elif user_field == 'user_id':
+                                grouping_df['user_id'] = grouping_df['user_id']
+
+                            # Merge with grouping preferences as left table (preserves all grouping preference rows)
+                            merged_df = pd.merge(grouping_df, users_df, left_on='user_id', right_on='id', how='left', suffixes=('_x', '_y'))
+
+                            # Reorder columns to match the requested format
+                            desired_columns = [
+                                '@id_x', '@type_x', 'id_x', 'user', 'program', 'genderIdentity',
+                                'kaizenClientType', 'createdAt_x', 'updatedAt', 'sex', 'residingInPhilippines',
+                                'liftingExperience', 'groupGenderPreference', 'currentGoal', 'followUpLevel',
+                                'accountabilityBuddies', 'province', 'city', 'goSolo', 'hasAccountabilityBuddies',
+                                'retainPreviousCoach', 'joiningAsStudent', 'ageGroup', 'previousCoachName',
+                                'country', 'locationIdentifier', 'internationalCity', 'internationalState',
+                                '@id_y', '@type_y', 'id_y', 'email', 'name', 'createdAt_y',
+                                'OnboardingTasksCompleted', 'firstName', 'lastName', 'nickname', 'guid',
+                                'trackers', 'enrolledPrograms'
+                            ]
+
+                            # Keep only columns that exist in the merged dataframe
+                            final_columns = [col for col in desired_columns if col in merged_df.columns]
+                            merged_df = merged_df[final_columns]
+
+                            # Store merged data
+                            st.session_state.merged_data = merged_df
+                            st.session_state.column_mapping = {}  # Will be set when needed
+
+                            st.success(f"✅ Data merged successfully! Users: {len(users_df)}, Grouping: {len(grouping_df)}, Merged: {len(merged_df)}")
+
+                        else:
+                            st.error("❌ Could not find user field in grouping data for merging")
+                            return
+                    else:
+                        st.error("❌ Required fields not found for merging (users.id or grouping.user)")
+                        return
+                else:
+                    st.error("❌ Failed to fetch both users and grouping data")
+                    return
+
+            with st.spinner("Step 4/4: Creating merged Excel file..."):
+                # Create Excel file with multiple sheets like the manual "Merge & Download Excel" process
+                import io
+                from datetime import datetime
+
+                # Store merged data in session state for group creation
+                st.session_state.merged_data = merged_df
+
+                # Normalize data types to prevent display issues (same as manual process)
+                for df in [users_df, grouping_df, merged_df]:
+                    for col in df.columns:
+                        try:
+                            df[col] = df[col].apply(lambda x: str(x) if isinstance(x, (list, dict, tuple)) or pd.isna(x) else x)
+                            df[col] = df[col].astype(str)
+                        except:
+                            df[col] = "Data conversion error"
+
+                # Clean accountabilityBuddies field (same as manual process)
+                if 'accountabilityBuddies' in merged_df.columns:
+                    if 'hasAccountabilityBuddies' in merged_df.columns:
+                        merged_df['hasAccountabilityBuddies'] = merged_df['hasAccountabilityBuddies'].astype(str).str.lower()
+                        mask = merged_df['hasAccountabilityBuddies'].isin(['false', '0', '0.0', 'no'])
+                        merged_df.loc[mask, 'accountabilityBuddies'] = ''
+
+                    def clean_accountability_buddies(value):
+                        if pd.isna(value) or value == 'None' or value == 'nan':
+                            return ''
+                        if isinstance(value, str):
+                            if value == '[None, None]' or value == '[None]' or value == "{'1': None}":
+                                return ''
+                            cleaned = value.strip('[]').replace('"', '').replace("'", '')
+                            if cleaned == '' or cleaned == 'None':
+                                return ''
+                            emails = [email.strip() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
+                            if not emails:
+                                return ''
+                            return value
+                        return value
+
+                    merged_df['accountabilityBuddies'] = merged_df['accountabilityBuddies'].apply(clean_accountability_buddies)
+
+                # Create Excel file with multiple sheets (same as manual process)
+                buffer = io.BytesIO()
+
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    # Main merged data
+                    merged_df.to_excel(writer, sheet_name='Merged Data', index=False)
+
+                    # Individual datasets
+                    users_df.to_excel(writer, sheet_name='Users Data', index=False)
+                    grouping_df.to_excel(writer, sheet_name='Grouping Preferences', index=False)
+
+                    # Summary sheet
+                    summary_data = {
+                        'Metric': ['Total Records', 'Users Data', 'Grouping Preferences', 'Merged Records'],
+                        'Count': [len(merged_df), len(users_df), len(grouping_df), len(merged_df)]
+                    }
+                    summary_df = pd.DataFrame(summary_data)
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+                buffer.seek(0)
+
+                st.success(f"✅ Successfully merged data! Result: {len(merged_df)} records")
+
+                # Show merged data info (same as manual process)
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Records", len(merged_df))
+                with col2:
+                    st.metric("Users Data", len(users_df))
+                with col3:
+                    st.metric("Grouping Preferences", len(grouping_df))
+
+                # Download button (same as manual process)
+                st.download_button(
+                    label="📥 Download Merged Excel File",
+                    data=buffer.getvalue(),
+                    file_name=f"merged_users_grouping_preferences_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+                # Show preview of merged data (same as manual process)
+                st.subheader("📊 Merged Data Preview")
+                st.dataframe(merged_df.head(10), use_container_width=True)
+
+        except Exception as e:
+            st.error(f"❌ Error during fetch and merge: {str(e)}")
+            import traceback
+            st.error(f"Details: {traceback.format_exc()}")
+
     # Merge data section
     st.subheader("🔗 Merge Data")
     
@@ -813,15 +1462,39 @@ def show_api_page():
     
     with col1:
         if st.button("👥 Fetch All Users", type="primary", use_container_width=True):
-            fetch_all_api_data("https://portal.thelazylifter.com/api/users", access_token)
+            fetch_all_api_data("https://portal.thelazylifter.com/api/users", access_token, max_pages=500)
             st.session_state.users_data = st.session_state.all_api_records
             st.success("✅ Users data fetched and stored!")
     
     with col2:
-        if st.button("📋 Fetch All Grouping Preferences", type="primary", use_container_width=True):
-            fetch_all_api_data("https://portal.thelazylifter.com/api/grouping_preferences", access_token)
-            st.session_state.grouping_data = st.session_state.all_api_records
-            st.success("✅ Grouping preferences data fetched and stored!")
+        if st.button("📋 Fetch All Grouping Preferences for Season 9", type="primary", use_container_width=True):
+            # Fetch only essential grouping preference data for Season 9
+            # Necessary data includes: user_id, gender_preference, and other grouping-related fields
+            # Using pagination to manage response size efficiently
+            fetch_all_api_data("https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7", access_token, max_pages=500)
+
+            # Filter to only include records with necessary data for grouping
+            if 'all_api_records' in st.session_state:
+                raw_data = st.session_state.all_api_records
+                essential_fields = ['id', 'user', 'groupGenderPreference', 'genderPreference']
+
+                # Keep only records that have at least one essential field
+                filtered_data = []
+                for record in raw_data:
+                    if isinstance(record, dict):
+                        has_essential_data = any(
+                            key in record and record[key] is not None and str(record[key]).strip() != ''
+                            for key in essential_fields
+                        )
+                        if has_essential_data:
+                            filtered_data.append(record)
+
+                st.session_state.grouping_data = filtered_data
+                st.info(f"📊 Filtered to {len(filtered_data)} records with essential grouping data (from {len(raw_data)} total)")
+            else:
+                st.session_state.grouping_data = st.session_state.all_api_records
+
+            st.success("✅ Essential grouping preferences data fetched and stored!")
     
     # Merge and download
     if st.button("🔗 Merge & Download Excel", type="secondary", use_container_width=True):
@@ -873,6 +1546,8 @@ def show_api_page():
                         endpoint_name = "Users API"
                     elif 'grouping_preferences' in current_url:
                         endpoint_name = "Grouping Preferences API"
+                    elif 'contexts/GroupingPreference' in current_url:
+                        endpoint_name = "Contexts Grouping Preference API"
                     else:
                         endpoint_name = "Custom API"
             
@@ -1113,31 +1788,35 @@ def fetch_api_data(api_url, access_token, page_number):
         st.error(f"❌ Unexpected error: {str(e)}")
         st.error(f"Error type: {type(e).__name__}")
 
-def fetch_all_api_data(api_url, access_token):
+def fetch_all_api_data(api_url, access_token, max_pages=50, items_per_page=30):
     """Fetch all pages of data from the API using Hydra format"""
     try:
         all_records = []
         page = 1
         total_pages = 0
-        
+        total_items = 0
+        consecutive_empty_pages = 0
+        current_url = api_url  # Start with the initial URL
+
         # Store the current API URL for display purposes
         st.session_state.current_api_url = api_url
-        
+
         # Create progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
+
         with st.spinner("Fetching all pages..."):
-            while True:
-                url = f"{api_url}?page={page}"
+            while current_url and page <= max_pages:
                 headers = {
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {access_token}"
                 }
-                
+
+                # Show the URL being used for this page
+                st.write(f"🔗 Page {page} URL: {current_url}")
                 status_text.text(f"Fetching page {page}...")
-                
-                response = requests.get(url, headers=headers, timeout=30)
+
+                response = requests.get(current_url, headers=headers, timeout=30)
                 
                 if response.status_code == 200:
                     try:
@@ -1149,7 +1828,8 @@ def fetch_all_api_data(api_url, access_token):
                             # Check for Hydra format first
                             if 'hydra:member' in data:
                                 records = data['hydra:member']
-                                # Get pagination info from hydra:view
+
+                                # Priority: Get pagination info from hydra:view first
                                 if 'hydra:view' in data:
                                     hydra_view = data['hydra:view']
                                     if 'hydra:last' in hydra_view:
@@ -1161,8 +1841,19 @@ def fetch_all_api_data(api_url, access_token):
                                             match = re.search(r'page=(\d+)', last_url)
                                             if match:
                                                 total_pages = int(match.group(1))
-                                        except:
-                                            pass
+                                                # Silently set total_pages without showing message
+                                            else:
+                                                st.warning("⚠️ Could not extract page count from API")
+                                        except Exception as e:
+                                            pass  # Silently handle extraction errors
+
+                                # Fallback: Get total items count from hydra:totalItems if view didn't work
+                                if total_pages == 0 and 'hydra:totalItems' in data:
+                                    total_items = int(data['hydra:totalItems'])
+                                    # Calculate total pages based on items per page
+                                    total_pages = (total_items + items_per_page - 1) // items_per_page  # Ceiling division
+                                    if total_pages <= max_pages:
+                                        st.info(f"📊 Estimated {total_pages} pages from {total_items} items")
                             elif 'data' in data:
                                 records = data['data']
                                 # Check if there's pagination info
@@ -1181,24 +1872,78 @@ def fetch_all_api_data(api_url, access_token):
                         
                         if records:
                             all_records.extend(records)
-                            st.success(f"✅ Page {page}: {len(records)} records")
+                            consecutive_empty_pages = 0  # Reset counter when we find records
+                            # Only show success messages every 5 pages or for significant events
+                            if page % 5 == 1 or page == 1:
+                                st.success(f"📄 Page {page}: {len(records)} records")
                         else:
-                            st.warning(f"⚠️ Page {page}: No records found")
-                            break
+                            consecutive_empty_pages += 1
+                            if consecutive_empty_pages == 1:
+                                st.warning(f"⚠️ Page {page}: No records found")
+
+                            # If we get 2 consecutive empty pages, assume we've reached the end
+                            if consecutive_empty_pages >= 2:
+                                break
                         
                         # Update progress
                         if total_pages > 0:
                             progress = min(page / total_pages, 1.0)
                             progress_bar.progress(progress)
-                        
+                            if total_items > 0:
+                                status_text.text(f"Fetching page {page}/{total_pages} ({len(all_records)}/{total_items} records)")
+                            else:
+                                status_text.text(f"Fetching page {page}/{total_pages}")
+                        else:
+                            status_text.text(f"Fetching page {page}...")
+
+                        # Check for next page URL in hydra:view
+                        next_url = None
+                        if isinstance(data, dict) and 'hydra:view' in data:
+                            hydra_view = data['hydra:view']
+                            if 'hydra:next' in hydra_view:
+                                next_url = hydra_view['hydra:next']
+
+                                # Handle relative URLs by making them absolute
+                                if next_url and not next_url.startswith(('http://', 'https://')):
+                                    # If it's a relative URL, prepend the confirmed base URL
+                                    from urllib.parse import urljoin
+                                    base_url = "https://portal.thelazylifter.com/"
+                                    next_url = urljoin(base_url, next_url.lstrip('/'))
+                                    # Silently fix the URL without showing a message
+
+                        # Update current URL for next iteration
+                        if next_url:
+                            current_url = next_url
+                        else:
+                            current_url = None  # No more pages
+
                         page += 1
-                        
-                        # If we know total pages and we've reached the end
+
+                        # If we know total pages from hydra:last, stop exactly at that page
                         if total_pages > 0 and page > total_pages:
                             break
-                            
-                        # If no records returned, assume we've reached the end
-                        if not records:
+
+                        # If no next URL, we've reached the end
+                        if not current_url:
+                            st.info("✅ Reached the last page (no more hydra:next URL)")
+                            break
+
+                        # Intelligent end detection: if we've fetched many pages with very few records, stop
+                        # This indicates we've reached the actual end of data, even if hydra:last suggests more pages
+                        if page > 5 and len(records) < 5 and consecutive_empty_pages == 0:
+                            actual_pages = page - 1  # The last page that had records
+                            if total_pages > actual_pages and total_pages > 10:  # Only adjust if significant discrepancy
+                                st.warning(f"⚠️ Data ends earlier than expected (page {actual_pages} vs {total_pages})")
+                                total_pages = actual_pages  # Update to reflect reality
+                                # Update progress bar to reflect corrected total
+                                progress = min(page / total_pages, 1.0)
+                                progress_bar.progress(progress)
+                            break
+
+                        # Safety check: if we've fetched many pages with very few records, stop
+                        # This prevents infinite loops when API returns empty pages
+                        if page > 5 and len(records) < 5:
+                            st.info(f"⚠️ Stopping at page {page} due to low record count ({len(records)} records)")
                             break
                             
                     except json.JSONDecodeError as e:
@@ -1215,8 +1960,11 @@ def fetch_all_api_data(api_url, access_token):
         
         progress_bar.empty()
         status_text.empty()
-        
-        st.success(f"✅ Successfully fetched {len(all_records)} total records from {page-1} pages!")
+
+        if total_items > 0:
+            st.success(f"✅ Successfully fetched {len(all_records)}/{total_items} records from {page-1} pages!")
+        else:
+            st.success(f"✅ Successfully fetched {len(all_records)} total records from {page-1} pages!")
         
     except requests.exceptions.RequestException as e:
         st.error(f"❌ Connection error: {str(e)}")
@@ -1280,14 +2028,32 @@ def merge_and_download_excel(access_token):
             st.write(list(users_df.columns))
             return
         
-        # Merge the data
+        # Merge the data with grouping preferences as left table (preserves all grouping preference rows)
         merged_df = pd.merge(
-            grouping_df, 
-            users_df, 
-            left_on=user_id_field, 
-            right_on=users_id_field, 
-            how='left'
+            grouping_df,
+            users_df,
+            left_on=user_id_field,
+            right_on=users_id_field,
+            how='left',
+            suffixes=('_x', '_y')
         )
+
+        # Reorder columns to match the requested format
+        desired_columns = [
+            '@id_x', '@type_x', 'id_x', 'user', 'program', 'genderIdentity',
+            'kaizenClientType', 'createdAt_x', 'updatedAt', 'sex', 'residingInPhilippines',
+            'liftingExperience', 'groupGenderPreference', 'currentGoal', 'followUpLevel',
+            'accountabilityBuddies', 'province', 'city', 'goSolo', 'hasAccountabilityBuddies',
+            'retainPreviousCoach', 'joiningAsStudent', 'ageGroup', 'previousCoachName',
+            'country', 'locationIdentifier', 'internationalCity', 'internationalState',
+            '@id_y', '@type_y', 'id_y', 'email', 'name', 'createdAt_y',
+            'OnboardingTasksCompleted', 'firstName', 'lastName', 'nickname', 'guid',
+            'trackers', 'enrolledPrograms'
+        ]
+
+        # Keep only columns that exist in the merged dataframe
+        final_columns = [col for col in desired_columns if col in merged_df.columns]
+        merged_df = merged_df[final_columns]
         
         st.success(f"✅ Successfully merged data! Result: {len(merged_df)} records")
         
