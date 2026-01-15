@@ -306,13 +306,13 @@ def format_location_display(member, column_mapping):
 
         parts = []
         if international_city:
-            parts.append(international_city)
+            parts.append(str(international_city))
         if international_state:
-            parts.append(international_state)
+            parts.append(str(international_state))
         if location_identifier:
-            parts.append(location_identifier)
+            parts.append(str(location_identifier))
         if country:
-            parts.append(country)
+            parts.append(str(country))
 
         return ', '.join(parts) if parts else ''
 
@@ -2345,6 +2345,24 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                         is_combined_group = group_info['is_combined']
                         combined_info = group_info['combined_info']
                         break
+            
+            # Determine if this is a team group or accountability buddy group
+            team_names = set()
+            has_accountability = False
+            for member in group:
+                # Check team (assuming kaizen_client_type is the team)
+                team = safe_get_value(member, column_mapping.get('kaizen_client_type', ''), '')
+                if team:
+                    team_names.add(str(team).strip())
+                
+                # Check accountability
+                acc = safe_get_value(member, column_mapping.get('accountability_buddies', ''), '')
+                if acc and str(acc).strip() not in ['', 'None', 'nan', 'NaN']:
+                    has_accountability = True
+            
+            all_same_team = len(team_names) == 1
+            all_no_accountability = not has_accountability
+            team_name = list(team_names)[0] if all_same_team else ""
             
             if all_same_team and all_no_accountability and team_name:
                 # This is a team group
