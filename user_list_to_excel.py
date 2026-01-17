@@ -131,7 +131,7 @@ def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None,
         fill_color = SEX_COLOR[sex_lower]
 
     # Special fill color for get_bigger goal (overrides sex color for User ID)
-    if is_user_id and current_goal and str(current_goal).lower() == 'get_bigger':
+    if is_user_id and current_goal and str(current_goal).lower() == 'bulking':
         fill_color = GREEN_COLOR
 
     # Apply fill color if set
@@ -223,16 +223,8 @@ def save_user_list_to_excel(data, filename_or_buffer, column_mapping):
     else:
         print("⚠️ No user_id column found - cannot deduplicate")
 
-    # Sort data by user_id, name, city, coach for consistent ordering
-    sorted_data = sorted(data, key=lambda m: (
-        m.get(column_mapping.get('user_id'), ''),
-        m.get(column_mapping.get('name'), ''),
-        m.get(column_mapping.get('city'), ''),
-        m.get(column_mapping.get('previous_coach_name'), '')
-    ))
-
-    # Add each user as a row
-    for member in sorted_data:
+    # Preserve original order from source data
+    for member in data:
         location_display = format_location_display(member, column_mapping)
         coach_name = safe_get_value(member, column_mapping.get('previous_coach_name', ''), '')
         age_group = safe_get_value(member, column_mapping.get('age_group', ''), '')
