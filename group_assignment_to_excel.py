@@ -589,7 +589,7 @@ def get_country_region(country):
             return region
     return 'other'
 
-def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None, has_accountability_buddies=None, current_goal=None, is_user_id=False):
+def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None, has_accountability_buddies=None, current_goal=None, is_user_id=False, accountability_buddies=None):
     """Apply color coding based on sex, font styling, and special fill coloring"""
     # Apply fill color based on sex (default)
     fill_color = None
@@ -598,7 +598,7 @@ def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None,
         fill_color = SEX_COLOR[sex_lower]
 
     # Special fill color for get_bigger goal (overrides sex color for User ID)
-    if is_user_id and current_goal and str(current_goal).lower() == 'get_bigger':
+    if is_user_id and current_goal and str(current_goal).lower() == 'bulking':
         fill_color = GREEN_COLOR
 
     # Apply fill color if set
@@ -619,7 +619,8 @@ def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None,
         is_bold = True
 
     # Underlined text for users with accountability buddies
-    if has_accountability_buddies and str(has_accountability_buddies).lower() in ['1', '1.0', 'true', 'yes']:
+    if (has_accountability_buddies and str(has_accountability_buddies).lower() in ['1', '1.0', 'true', 'yes'] and
+        accountability_buddies and str(accountability_buddies).strip() not in ['', 'None', 'nan', 'NaN']):
         is_underline = True
 
     # Create font style - always create a new font with the desired properties
@@ -628,6 +629,30 @@ def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None,
         bold=is_bold,
         underline='single' if is_underline else None
     )
+
+def format_name_display(name, kaizen_client_type):
+    """Format name with prefixes/suffixes based on kaizen_client_type"""
+    if not name:
+        return name
+
+    formatted_name = str(name).strip()
+
+    if kaizen_client_type:
+        client_type = str(kaizen_client_type).lower().strip()
+
+        # Add ** before name for team_member
+        if client_type == "team_member":
+            formatted_name = f"**{formatted_name}"
+
+        # Add * at end for returning_latest
+        elif client_type == "returning_latest":
+            formatted_name = f"{formatted_name}*"
+
+        # Add ** at end for returning_other
+        elif client_type == "returning_other":
+            formatted_name = f"{formatted_name}**"
+
+    return formatted_name
 
 def generate_diagnostic_report(user_tracking, original_count, solo_groups, grouped, excluded_users, requested_groups, column_mapping):
     """Generate a comprehensive diagnostic report of user distribution"""
@@ -2407,6 +2432,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     location_display = format_location_display(member, column_mapping)
                     coach_name = safe_get_value(member, column_mapping.get('previous_coach_name', ''), '')
                     age_group = safe_get_value(member, column_mapping.get('age_group', ''), '')
+                    kaizen_client_type = safe_get_value(member, column_mapping.get('kaizen_client_type', ''), '')
                     # Format coach name with age group in parentheses
                     coach_with_age = coach_name
                     if coach_name and age_group:
@@ -2416,9 +2442,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     elif age_group:
                         coach_with_age = f"({age_group})"
 
+                    # Format the name with prefixes/suffixes based on kaizen_client_type
+                    original_name = member.get(column_mapping.get('name'), '')
+                    formatted_name = format_name_display(original_name, kaizen_client_type)
+
                     row.extend([
                         member.get(column_mapping.get('user_id'), ''),
-                        member.get(column_mapping.get('name'), ''),
+                        formatted_name,  # Use formatted name with prefixes/suffixes
                         location_display,
                         coach_with_age
                     ])
@@ -2472,8 +2502,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                     gender_identity = member.get(column_mapping.get('gender_identity'), '')
                     has_accountability_buddies = member.get(column_mapping.get('has_accountability_buddies'), '')
                     current_goal = member.get(column_mapping.get('current_goal'), '')
-                    apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
-                    apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
+                    accountability_buddies = member.get(column_mapping.get('accountability_buddies'), '')
+                    apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies)  # User ID
+                    apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies)  # Name
         
         # After all requested groups are written, apply green highlight to group name cell if group has 5 or more members
         for row_idx, group_size in group_row_indices:
@@ -2497,6 +2528,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 location_display = format_location_display(member, column_mapping)
                 coach_name = safe_get_value(member, column_mapping.get('previous_coach_name', ''), '')
                 age_group = safe_get_value(member, column_mapping.get('age_group', ''), '')
+                kaizen_client_type = safe_get_value(member, column_mapping.get('kaizen_client_type', ''), '')
                 # Format coach name with age group in parentheses
                 coach_with_age = coach_name
                 if coach_name and age_group:
@@ -2506,9 +2538,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 elif age_group:
                     coach_with_age = f"({age_group})"
 
+                # Format the name with prefixes/suffixes based on kaizen_client_type
+                original_name = member.get(column_mapping.get('name'), '')
+                formatted_name = format_name_display(original_name, kaizen_client_type)
+
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
-                    member.get(column_mapping.get('name'), ''),
+                    formatted_name,  # Use formatted name with prefixes/suffixes
                     location_display,
                     coach_with_age
                 ])
@@ -2538,8 +2574,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 gender_identity = safe_get_value(member, column_mapping.get('gender_identity', ''), '')
                 has_accountability_buddies = safe_get_value(member, column_mapping.get('has_accountability_buddies', ''), '')
                 current_goal = safe_get_value(member, column_mapping.get('current_goal', ''), '')
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
+                accountability_buddies = safe_get_value(member, column_mapping.get('accountability_buddies', ''), '')
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies)  # User ID
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies)  # Name
     
     # Write grouped participants
     # Track regular groups with 5 or more members for highlighting
@@ -2560,6 +2597,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 location_display = format_location_display(member, column_mapping)
                 coach_name = safe_get_value(member, column_mapping.get('previous_coach_name', ''), '')
                 age_group = safe_get_value(member, column_mapping.get('age_group', ''), '')
+                kaizen_client_type = safe_get_value(member, column_mapping.get('kaizen_client_type', ''), '')
                 # Format coach name with age group in parentheses
                 coach_with_age = coach_name
                 if coach_name and age_group:
@@ -2569,9 +2607,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 elif age_group:
                     coach_with_age = f"({age_group})"
 
+                # Format the name with prefixes/suffixes based on kaizen_client_type
+                original_name = member.get(column_mapping.get('name'), '')
+                formatted_name = format_name_display(original_name, kaizen_client_type)
+
                 row.extend([
                     member.get(column_mapping.get('user_id'), ''),
-                    member.get(column_mapping.get('name'), ''),
+                    formatted_name,  # Use formatted name with prefixes/suffixes
                     location_display,
                     coach_with_age
                 ])
@@ -2629,8 +2671,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 gender_identity = safe_get_value(member, column_mapping.get('gender_identity', ''), '')
                 has_accountability_buddies = safe_get_value(member, column_mapping.get('has_accountability_buddies', ''), '')
                 current_goal = safe_get_value(member, column_mapping.get('current_goal', ''), '')
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
+                accountability_buddies = safe_get_value(member, column_mapping.get('accountability_buddies', ''), '')
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies)  # User ID
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies)  # Name
     
     # Apply highlighting to regular groups with 5 or more members and same location
     if regular_group_row_indices:
@@ -2648,6 +2691,7 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             location_display = format_location_display(user, column_mapping)
             coach_name = safe_get_value(user, column_mapping.get('previous_coach_name', ''), '')
             age_group = safe_get_value(user, column_mapping.get('age_group', ''), '')
+            kaizen_client_type = safe_get_value(user, column_mapping.get('kaizen_client_type', ''), '')
             # Format coach name with age group in parentheses
             coach_with_age = coach_name
             if coach_name and age_group:
@@ -2657,9 +2701,13 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             elif age_group:
                 coach_with_age = f"({age_group})"
 
+            # Format the name with prefixes/suffixes based on kaizen_client_type
+            original_name = user.get(column_mapping.get('name'), '')
+            formatted_name = format_name_display(original_name, kaizen_client_type)
+
             row.extend([
                 user.get(column_mapping.get('user_id'), ''),
-                user.get(column_mapping.get('name'), ''),
+                formatted_name,  # Use formatted name with prefixes/suffixes
                 location_display,
                 coach_with_age
             ])
@@ -2690,8 +2738,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             gender_identity = user.get(column_mapping.get('gender_identity'), '')
             has_accountability_buddies = user.get(column_mapping.get('has_accountability_buddies'), '')
             current_goal = user.get(column_mapping.get('current_goal'), '')
-            apply_color_to_cell(ws.cell(row=ws.max_row, column=2), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
-            apply_color_to_cell(ws.cell(row=ws.max_row, column=3), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False)  # Name
+            accountability_buddies = user.get(column_mapping.get('accountability_buddies'), '')
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=2), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies)  # User ID
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=3), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies)  # Name
     
     # Check if filename_or_buffer is a string (file path) or BytesIO buffer
     if isinstance(filename_or_buffer, str):
