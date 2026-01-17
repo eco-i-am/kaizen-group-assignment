@@ -187,13 +187,13 @@ def format_name_display(name, kaizen_client_type):
     return formatted_name
 
 def save_user_list_to_excel(data, filename_or_buffer, column_mapping):
-    """Save user list to Excel with 4 columns: User ID, Name, Location, Coach"""
+    """Save user list to Excel with 6 columns: User ID, Name, Location, Coach and Age, Email Address, Group Mates"""
     wb = Workbook()
     ws = wb.active
     ws.title = "User List"
 
-    # Header with 5 columns
-    ws.append(["User ID", "Name", "Location", "Coach and Age", "Group Mates"])
+    # Header with 6 columns
+    ws.append(["User ID", "Name", "Location", "Coach and Age", "Email Address", "Group Mates"])
 
     # Remove duplicates based on user_id before processing
     user_id_col = column_mapping.get('user_id')
@@ -264,6 +264,7 @@ def save_user_list_to_excel(data, filename_or_buffer, column_mapping):
             formatted_name,  # Use formatted name with prefixes/suffixes
             location_display,
             coach_with_age,  # Use formatted coach name with age group
+            safe_get_value(member, column_mapping.get('email', ''), ''),  # Email Address
             safe_get_value(member, column_mapping.get('accountability_buddies', ''), '')  # Group Mates
         ]
         ws.append(row)
