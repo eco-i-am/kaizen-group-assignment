@@ -1074,7 +1074,7 @@ def check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups,
     print(f"🔍 END OF DUPLICATE USERS DETECTION")
     print(f"="*60)
 
-def merge_small_groups(grouped, column_mapping):
+def merge_small_groups(grouped, column_mapping, email_mapping):
     """
     POST-PROCESSING OPTIMIZATION: Merge small groups to improve group sizes.
 
@@ -1213,8 +1213,13 @@ def merge_small_groups(grouped, column_mapping):
         
         # Multiple groups in same location-gender combo, try to merge
         all_members = []
+        seen_emails = set()
         for _, members in group_list:
-            all_members.extend(members)
+            for member in members:
+                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                if member_email not in seen_emails:
+                    all_members.append(member)
+                    seen_emails.add(member_email)
         
         # Create new groups of up to 5 members
         i = 0
@@ -1273,9 +1278,18 @@ def merge_small_groups(grouped, column_mapping):
         
         # Create final groups from each gender category
         for gender_key, all_members in gender_groups.items():
+            # Remove duplicates from all_members
+            unique_members = []
+            seen_emails = set()
+            for member in all_members:
+                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                if member_email not in seen_emails:
+                    unique_members.append(member)
+                    seen_emails.add(member_email)
+            
             i = 0
-            while i < len(all_members):
-                group_members = all_members[i:i+5]
+            while i < len(unique_members):
+                group_members = unique_members[i:i+5]
                 new_group_name = f"Group {group_counter} ({gender_key}, merged)"
                 final_regular_groups[new_group_name] = group_members
                 group_counter += 1
@@ -1773,27 +1787,33 @@ def group_participants(data, column_mapping):
 
     
     # Move single-member requested groups to regular groups BEFORE regular grouping
+    # But keep users who have accountability_buddies specified in requested groups
     single_member_requested_groups = []
     multi_member_requested_groups = []
     
     for group in requested_groups:
         if len(group) == 1:
-            # Move ALL single-member groups to regular groups
-            # This ensures no users are left isolated in single-member groups
             user = group[0]
-            # Single member group - move to regular groups
-            single_member_requested_groups.append(user)
+            accountability_buddies = get_value(user, 'accountability_buddies', '')
+            
+            # If user has accountability_buddies specified (not empty), keep in requested groups
+            if accountability_buddies and str(accountability_buddies).strip() not in ['', 'None', 'nan', 'NaN']:
+                # Keep in requested groups
+                multi_member_requested_groups.append(group)
+            else:
+                # Move to regular groups if no accountability_buddies specified
+                single_member_requested_groups.append(user)
 
-            # Update user tracking
-            user_email = normalize_email(get_value(user, 'email', ''), email_mapping)
-            for user_id, info in user_tracking.items():
-                if info.get('email') == user_email:
-                    info['status'] = 'regular_grouping'
-                    info['reason'] = 'Moved from single-member requested group to regular grouping'
-                    break
+                # Update user tracking
+                user_email = normalize_email(get_value(user, 'email', ''), email_mapping)
+                for user_id, info in user_tracking.items():
+                    if info.get('email') == user_email:
+                        info['status'] = 'regular_grouping'
+                        info['reason'] = 'Moved from single-member requested group to regular grouping'
+                        break
 
-            # Remove from assigned_users so they can go through regular grouping
-            assigned_users.discard(user_email)
+                # Remove from assigned_users so they can go through regular grouping
+                assigned_users.discard(user_email)
         else:
             # Multi-member group - keep as requested group
             multi_member_requested_groups.append(group)
@@ -2222,50 +2242,39 @@ def group_participants(data, column_mapping):
                         
                         # Add remaining members to a mixed group if any
                         if remaining_members:
-                            # Check if we can combine with other remaining members from other states/countries
-                            all_remaining_international = []
-                            for other_country_norm, other_country_members in country_groups.items():
-                                if other_country_norm != country_norm:
-                                    for other_state_norm, other_state_members in state_groups.items():
-                                        if other_state_norm != state_norm:
-                                            # Get remaining members from other states
-                                            other_remaining = []
-                                            for other_member in other_state_members:
-                                                other_email = normalize_email(get_value(other_member, 'email', ''), email_mapping)
-                                                if other_email not in assigned_users:
-                                                    other_remaining.append(other_member)
-                                            all_remaining_international.extend(other_remaining)
-                            
-                            # Combine with other remaining international members
-                            combined_remaining = remaining_members + all_remaining_international
-                            
-                            if combined_remaining:
-                                # Create groups from combined remaining
-                                i = 0
-                                while i + 5 <= len(combined_remaining):
-                                    group_members = combined_remaining[i:i+5]
-                                    location_info = f"International Mixed"
-                                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-                                    # Mark all members as assigned
-                                    for member in group_members:
-                                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                                        assigned_users.add(member_email)
-                                    group_counter += 1
-                                    i += 5
-                                
-                                # Handle final remaining (less than 5)
-                                if i < len(combined_remaining):
-                                    final_group = combined_remaining[i:]
-                                    location_info = f"International Mixed"
-                                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = final_group
-                                    # Mark all members as assigned
-                                    for member in final_group:
-                                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                                        assigned_users.add(member_email)
-                                    group_counter += 1
+                            # For now, just create a small group with remaining members
+                            # We'll handle international mixed groups later
+                            location_info = f"Country: {country}, State: {state}"
+                            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = remaining_members
+                            # Mark all members as assigned
+                            for member in remaining_members:
+                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                                assigned_users.add(member_email)
+                            group_counter += 1
     
+    # After processing all countries/states, create international mixed groups from any remaining unassigned international users
+    remaining_international = []
+    for r in non_ph_rows:
+        member_email = normalize_email(get_value(r, 'email', ''), email_mapping)
+        if member_email not in assigned_users:
+            remaining_international.append(r)
+    
+    if remaining_international:
+        # Create mixed groups from remaining international users
+        i = 0
+        while i < len(remaining_international):
+            group_members = remaining_international[i:i+5]
+            location_info = f"International Mixed"
+            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+            # Mark all members as assigned
+            for member in group_members:
+                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                assigned_users.add(member_email)
+            group_counter += 1
+            i += 5
+
     # Merge small groups based on geographic proximity
-    grouped = merge_small_groups(grouped, column_mapping)
+    grouped = merge_small_groups(grouped, column_mapping, email_mapping)
     
     # Generate diagnostic report
     generate_diagnostic_report(user_tracking, original_count, solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
