@@ -70,7 +70,7 @@ def safe_get_value(data_dict, key, default=''):
 # ============================================================================
 
 # File paths - Update INPUT_FILE to point to your merged data file
-INPUT_FILE = 'merged_users_grouping_preferences_20250719_133755.xlsx'  # Change this to your merged file
+INPUT_FILE = 'merged_users_grouping_preferences_20260118_212836.xlsx'  # Change this to your merged file
 OUTPUT_FILE = 'grouped_participants.xlsx'
 
 # ============================================================================
@@ -230,6 +230,8 @@ EXPECTED_COLUMNS = {
     'province': ['province', 'state_province'],
     'city': ['city', 'municipality'],
     'state': ['state', 'region', 'stat'],
+    'internationalState': ['internationalState'],
+    'internationalCity': ['internationalCity'],
     'go_solo': ['go_solo', 'solo', 'prefer_solo', 'goSolo'],
     'joining_as_student': ['joining_as_student', 'joiningAsStudent', 'student', 'is_student'],
     'kaizen_client_type': ['kaizen_client_type', 'kaizenClientType', 'client_type', 'clientType'],
@@ -971,7 +973,7 @@ def generate_missing_users_analysis(user_tracking, original_count, solo_groups, 
     print(f"🔍 END OF MISSING USERS ANALYSIS")
     print(f"="*60)
 
-def check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups, column_mapping):
+def check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups, column_mapping, email_mapping):
     """Check for duplicate users across all group types and report them"""
     
     print(f"\n" + "="*60)
@@ -1074,235 +1076,243 @@ def check_for_duplicates(solo_groups, grouped, excluded_users, requested_groups,
     print(f"🔍 END OF DUPLICATE USERS DETECTION")
     print(f"="*60)
 
-def merge_small_groups(grouped, column_mapping, email_mapping):
-    """
-    POST-PROCESSING OPTIMIZATION: Merge small groups to improve group sizes.
-
-    Identifies regular groups with <4 members and merges them based on geographic
-    proximity and gender compatibility. Ensures all groups have optimal sizes
-    (3-5 members) while maintaining geographic and gender preferences.
-
-    MERGING STRATEGY:
-    1. Find small groups (<4 members) in regular algorithmic groups
-    2. Group small groups by geographic location + gender compatibility
-    3. Merge compatible groups, prioritizing same-location matches
-    4. Never exceed 5 members per group
-
-    Args:
-        grouped: Dictionary of {group_name: [members]} from regular grouping
-        column_mapping: Column name mappings
-
-    Returns:
-        dict: Optimized groups with improved size distribution
-    """
-    if not grouped:
-        return grouped
-    
+# def merge_small_groups(grouped, column_mapping, email_mapping):
+# #     """
+#     POST-PROCESSING OPTIMIZATION: Merge small groups to improve group sizes.
+#
+#     Identifies regular groups with <4 members and merges them based on geographic
+#     proximity and gender compatibility. Ensures all groups have optimal sizes
+#     (3-5 members) while maintaining geographic and gender preferences.
+#
+#     MERGING STRATEGY:
+#     1. Find small groups (<4 members) in regular algorithmic groups
+#     2. Group small groups by geographic location + gender compatibility
+#     3. Merge compatible groups, prioritizing same-location matches
+#     4. Never exceed 5 members per group
+#
+#     Args:
+#         grouped: Dictionary of {group_name: [members]} from regular grouping
+# #         column_mapping: Column name mappings
+# 
+#     Returns:
+#         dict: Optimized groups with improved size distribution
+#     """
+#     if not grouped:
+#         return grouped
+#     
     # Helper function to get value safely
-    def get_value(row, key, default=''):
-        if column_mapping and key in column_mapping:
-            if isinstance(row, dict):
-                return row.get(column_mapping[key], default)
-            else:
-                return default
-        else:
+#     def get_value(row, key, default=''):
+#         if column_mapping and key in column_mapping:
+#             if isinstance(row, dict):
+#                 return row.get(column_mapping[key], default)
+#             else:
+#                 return default
+#         else:
             # Fallback to old format (list indices)
-            if isinstance(row, list):
-                if key == 'user_id':
-                    return row[0] if len(row) > 0 else default
-                elif key == 'residing_ph':
-                    return row[8] if len(row) > 8 else default
-                elif key == 'country':
-                    return row[16] if len(row) > 16 else default
-                elif key == 'province':
-                    return row[17] if len(row) > 17 else default
-                elif key == 'city':
-                    return row[18] if len(row) > 18 else default
-                elif key == 'state':
-                    return row[19] if len(row) > 19 else default
-            return default
-    
-    # Helper function to get location key for proximity matching (more flexible)
-    def get_location_key(member):
-        residing_ph = str(get_value(member, 'residing_ph', '0')).strip().lower()
-        if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
-            # Philippines: use province only (more flexible than exact city)
-            province = str(get_value(member, 'province', '')).strip().lower()
-            return f"PH_{province}"
-        else:
-            # International: use country and timezone region (more flexible than exact state)
-            country = str(get_value(member, 'country', '')).strip().lower()
-            state = str(get_value(member, 'state', '')).strip().lower()
-            timezone_region = get_timezone_region(country, state)
-            return f"INT_{country}_{timezone_region}"
-    
+#             if isinstance(row, list):
+#                 if key == 'user_id':
+#                     return row[0] if len(row) > 0 else default
+#                 elif key == 'residing_ph':
+#                     return row[8] if len(row) > 8 else default
+#                 elif key == 'country':
+#                     return row[16] if len(row) > 16 else default
+#                 elif key == 'province':
+#                     return row[17] if len(row) > 17 else default
+#                 elif key == 'city':
+#                     return row[18] if len(row) > 18 else default
+#                 elif key == 'state':
+#                     return row[19] if len(row) > 19 else default
+#             return default
+#     
+    # Helper function to get location key for proximity matching (respect geographic boundaries)
+#     def get_location_key(member):
+#         residing_ph = str(get_value(member, 'residing_ph', '0')).strip().lower()
+#         if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+            # Philippines: respect the geographic rules we established
+#             province = str(get_value(member, 'province', '')).strip()
+#             city = str(get_value(member, 'city', '')).strip()
+# 
+            # Check if Metro Manila
+#             if province.lower() in ['metro manila', 'mm', 'manila']:
+                # MM: group by city only
+#                 return f"PH_MM_{city}"
+#             else:
+                # Outside MM: group by province only
+#                 return f"PH_{province}"
+#         else:
+            # International: respect country + state boundaries (don't merge across states)
+#             country = str(get_value(member, 'country', '')).strip()
+#             state = str(get_value(member, 'state', '')).strip()
+#             return f"INT_{country}_{state}"
+#     
     # Helper function to get gender key for compatibility
-    def get_gender_key(member):
-        gender_pref = str(get_value(member, 'gender_preference', '')).lower()
-        if gender_pref == 'same_gender':
-            sex = str(get_value(member, 'sex', '')).lower()
-            gender_identity = str(get_value(member, 'gender_identity', '')).upper()
-            if gender_identity == 'LGBTQ+':
-                return f"lgbtq+_{sex}"
-            else:
-                return sex
-        elif gender_pref == 'no_preference':
-            return 'no_preference'
-        else:
-            return 'other'
-    
+#     def get_gender_key(member):
+#         gender_pref = str(get_value(member, 'gender_preference', '')).lower()
+#         if gender_pref == 'same_gender':
+#             sex = str(get_value(member, 'sex', '')).lower()
+#             gender_identity = str(get_value(member, 'gender_identity', '')).upper()
+#             if gender_identity == 'LGBTQ+':
+#                 return f"lgbtq+_{sex}"
+#             else:
+#                 return sex
+#         elif gender_pref == 'no_preference':
+#             return 'no_preference'
+#         else:
+#             return 'other'
+#     
     # Separate small groups (less than 4 members) that start with "Group*"
-    small_groups = {}
-    other_groups = {}
-    
-    for group_name, members in grouped.items():
-        if group_name.startswith("Group ") and len(members) < 4:
-            small_groups[group_name] = members
-        else:
-            other_groups[group_name] = members
-    
-    if not small_groups:
-        return grouped
-    
-    print(f"🔍 Found {len(small_groups)} small groups to potentially merge")
-    
+#     small_groups = {}
+#     other_groups = {}
+#     
+#     for group_name, members in grouped.items():
+#         if group_name.startswith("Group ") and len(members) < 4:
+#             small_groups[group_name] = members
+#         else:
+#             other_groups[group_name] = members
+#     
+#     if not small_groups:
+#         return grouped
+#     
+#     print(f"🔍 Found {len(small_groups)} small groups to potentially merge")
+#     
     # Group small groups by location and gender compatibility
-    location_gender_groups = defaultdict(list)
-    
-    for group_name, members in small_groups.items():
-        if not members:
-            continue
-        
+#     location_gender_groups = defaultdict(list)
+#     
+#     for group_name, members in small_groups.items():
+#         if not members:
+#             continue
+#         
         # Get location and gender info from first member
-        first_member = members[0]
-        location_key = get_location_key(first_member)
-        gender_key = get_gender_key(first_member)
-        
+#         first_member = members[0]
+#         location_key = get_location_key(first_member)
+#         gender_key = get_gender_key(first_member)
+#         
         # Create a composite key for grouping
-        composite_key = f"{location_key}_{gender_key}"
-        location_gender_groups[composite_key].append((group_name, members))
-    
+#         composite_key = f"{location_key}_{gender_key}"
+#         location_gender_groups[composite_key].append((group_name, members))
+#     
     # If we still have groups with <4 members, try broader geographic matching
     # Group by just gender preference (ignore location constraints)
-    if any(len(group_list) == 1 for group_list in location_gender_groups.values()):
-        print("🔄 Trying broader geographic matching for remaining small groups...")
-        
+#     if any(len(group_list) == 1 for group_list in location_gender_groups.values()):
+#         print("🔄 Trying broader geographic matching for remaining small groups...")
+#         
         # Reset and try broader matching
-        location_gender_groups = defaultdict(list)
-        
-        for group_name, members in small_groups.items():
-            if not members:
-                continue
-            
-            first_member = members[0]
-            gender_key = get_gender_key(first_member)
-            
+#         location_gender_groups = defaultdict(list)
+#         
+#         for group_name, members in small_groups.items():
+#             if not members:
+#                 continue
+#             
+#             first_member = members[0]
+#             gender_key = get_gender_key(first_member)
+#             
             # Use only gender key for broader matching
-            location_gender_groups[gender_key].append((group_name, members))
-    
+#             location_gender_groups[gender_key].append((group_name, members))
+#     
     # Merge groups within each location-gender combination
-    merged_groups = {}
-    group_counter = 1
-    
-    for composite_key, group_list in location_gender_groups.items():
-        if len(group_list) == 1:
+#     merged_groups = {}
+#     group_counter = 1
+#     
+#     for composite_key, group_list in location_gender_groups.items():
+#         if len(group_list) == 1:
             # Only one group in this location-gender combo, keep as is
-            group_name, members = group_list[0]
-            merged_groups[group_name] = members
-            continue
-        
+#             group_name, members = group_list[0]
+#             merged_groups[group_name] = members
+#             continue
+#         
         # Multiple groups in same location-gender combo, try to merge
-        all_members = []
-        seen_emails = set()
-        for _, members in group_list:
-            for member in members:
-                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                if member_email not in seen_emails:
-                    all_members.append(member)
-                    seen_emails.add(member_email)
-        
+#         all_members = []
+#         seen_emails = set()
+#         for _, members in group_list:
+#             for member in members:
+#                 member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+#                 if member_email not in seen_emails:
+#                     all_members.append(member)
+#                     seen_emails.add(member_email)
+#         
         # Create new groups of up to 5 members
-        i = 0
-        while i < len(all_members):
-            group_members = all_members[i:i+5]
-            
+#         i = 0
+#         while i < len(all_members):
+#             group_members = all_members[i:i+5]
+#             
             # Create new group name with location info
-            first_member = group_members[0]
-            location_key = get_location_key(first_member)
-            gender_key = get_gender_key(first_member)
-            
+#             first_member = group_members[0]
+#             location_key = get_location_key(first_member)
+#             gender_key = get_gender_key(first_member)
+#             
             # Extract location info for display
-            if location_key.startswith("PH_"):
-                parts = location_key.split("_")
-                if len(parts) >= 2:
-                    province = parts[1].title()
-                    location_info = f"Province: {province}"
-                else:
-                    location_info = "Philippines"
-            else:
-                parts = location_key.split("_")
-                if len(parts) >= 3:
-                    country = parts[1].title()
-                    timezone_region = parts[2].title()
-                    location_info = f"Country: {country}, Timezone: {timezone_region}"
-                else:
-                    location_info = "International"
-            
-            new_group_name = f"Group {group_counter} ({gender_key}, {location_info})"
-            merged_groups[new_group_name] = group_members
-            group_counter += 1
-            i += 5
-    
+#             if location_key.startswith("PH_MM_"):
+#                 city = location_key.replace("PH_MM_", "").title()
+#                 location_info = f"Province: MM, City: {city}"
+#             elif location_key.startswith("PH_"):
+#                 province = location_key.replace("PH_", "").title()
+#                 location_info = f"Province: {province}, Mixed Cities"
+#             elif location_key.startswith("INT_"):
+#                 parts = location_key.replace("INT_", "").split("_", 1)
+#                 if len(parts) >= 2:
+#                     country, state = parts
+#                     location_info = f"Country: {country.title()}, State: {state.title()}"
+#                 else:
+#                     country = parts[0]
+#                     location_info = f"Country: {country.title()}"
+#             else:
+#                 location_info = "Unknown Location"
+#             
+#             new_group_name = f"Group {group_counter} ({gender_key}, {location_info})"
+#             merged_groups[new_group_name] = group_members
+#             group_counter += 1
+#             i += 5
+#     
     # Final check: if any merged groups still have <4 members, combine them
-    final_small_groups = {}
-    final_regular_groups = {}
-    
-    for group_name, members in merged_groups.items():
-        if len(members) < 4:
-            final_small_groups[group_name] = members
-        else:
-            final_regular_groups[group_name] = members
-    
+#     final_small_groups = {}
+#     final_regular_groups = {}
+#     
+#     for group_name, members in merged_groups.items():
+#         if len(members) < 4:
+#             final_small_groups[group_name] = members
+#         else:
+#             final_regular_groups[group_name] = members
+#     
     # If we still have small groups, combine them by gender preference only
-    if final_small_groups:
-        print("🔄 Final merge: combining remaining small groups by gender preference...")
-        
-        gender_groups = defaultdict(list)
-        for group_name, members in final_small_groups.items():
-            if not members:
-                continue
-            
-            first_member = members[0]
-            gender_key = get_gender_key(first_member)
-            gender_groups[gender_key].extend(members)
-        
+#     if final_small_groups:
+#         print("🔄 Final merge: combining remaining small groups by gender preference...")
+#         
+#         gender_groups = defaultdict(list)
+#         for group_name, members in final_small_groups.items():
+#             if not members:
+#                 continue
+#             
+#             first_member = members[0]
+#             gender_key = get_gender_key(first_member)
+#             gender_groups[gender_key].extend(members)
+#         
         # Create final groups from each gender category
-        for gender_key, all_members in gender_groups.items():
+#         for gender_key, all_members in gender_groups.items():
             # Remove duplicates from all_members
-            unique_members = []
-            seen_emails = set()
-            for member in all_members:
-                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                if member_email not in seen_emails:
-                    unique_members.append(member)
-                    seen_emails.add(member_email)
-            
-            i = 0
-            while i < len(unique_members):
-                group_members = unique_members[i:i+5]
-                new_group_name = f"Group {group_counter} ({gender_key}, merged)"
-                final_regular_groups[new_group_name] = group_members
-                group_counter += 1
-                i += 5
-    
+#             unique_members = []
+#             seen_emails = set()
+#             for member in all_members:
+#                 member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+#                 if member_email not in seen_emails:
+#                     unique_members.append(member)
+#                     seen_emails.add(member_email)
+#             
+#             i = 0
+#             while i < len(unique_members):
+#                 group_members = unique_members[i:i+5]
+#                 new_group_name = f"Group {group_counter} ({gender_key}, merged)"
+#                 final_regular_groups[new_group_name] = group_members
+#                 group_counter += 1
+#                 i += 5
+#     
     # Combine all groups
-    final_groups = {}
-    final_groups.update(other_groups)
-    final_groups.update(final_regular_groups)
-    
-    print(f"✅ Merged {len(small_groups)} small groups into {len(final_regular_groups)} groups")
-    
-    return final_groups
+#     final_groups = {}
+#     final_groups.update(other_groups)
+#     final_groups.update(final_regular_groups)
+#     
+#     print(f"✅ Merged {len(small_groups)} small groups into {len(final_regular_groups)} groups")
+#     
+#     return final_groups
 
 # ============================================================================
 # MAIN GROUPING FUNCTIONS
@@ -1905,15 +1915,27 @@ def group_participants(data, column_mapping):
         for participant in same_gender_participants:
             ph_val = str(get_value(participant, 'residing_ph', '0')).strip().lower()
             if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
-                # Philippines: use province_city combination
+                # Philippines: different grouping for MM vs outside MM
                 province = str(get_value(participant, 'province', '')).strip()
                 city = str(get_value(participant, 'city', '')).strip()
-                location_key = f"PH_{province}_{city}"
+                if province.lower() in ['metro manila', 'mm']:
+                    # In MM, group only same city
+                    location_key = f"PH_MM_{city}"
+                else:
+                    # Outside MM, group only same province
+                    location_key = f"PH_{province}"
             else:
-                # International: use country_state combination
+                # International: group by country + internationalState if exists, else just country
                 country = str(get_value(participant, 'country', '')).strip()
-                state = str(get_value(participant, 'state', '')).strip()
-                location_key = f"INT_{country}_{state}"
+                if 'internationalState' in column_mapping and column_mapping['internationalState']:
+                    int_state = str(get_value(participant, 'internationalState', '')).strip()
+                    if int_state:
+                        location_key = f"INT_{country}_{int_state}"
+                    else:
+                        location_key = f"INT_{country}"
+                else:
+                    state = str(get_value(participant, 'state', '')).strip()
+                    location_key = f"INT_{country}_{state}"
 
             location_groups[location_key].append(participant)
 
@@ -1938,11 +1960,21 @@ def group_participants(data, column_mapping):
                         if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
                             filler_province = str(get_value(filler, 'province', '')).strip()
                             filler_city = str(get_value(filler, 'city', '')).strip()
-                            filler_location = f"PH_{filler_province}_{filler_city}"
+                            if filler_province.lower() in ['metro manila', 'mm']:
+                                filler_location = f"PH_MM_{filler_city}"
+                            else:
+                                filler_location = f"PH_{filler_province}"
                         else:
                             filler_country = str(get_value(filler, 'country', '')).strip()
-                            filler_state = str(get_value(filler, 'state', '')).strip()
-                            filler_location = f"INT_{filler_country}_{filler_state}"
+                            if 'internationalState' in column_mapping and column_mapping['internationalState']:
+                                filler_int_state = str(get_value(filler, 'internationalState', '')).strip()
+                                if filler_int_state:
+                                    filler_location = f"INT_{filler_country}_{filler_int_state}"
+                                else:
+                                    filler_location = f"INT_{filler_country}"
+                            else:
+                                filler_state = str(get_value(filler, 'state', '')).strip()
+                                filler_location = f"INT_{filler_country}_{filler_state}"
 
                         if filler_location == location_key:
                             available_fillers.append(filler)
@@ -1964,7 +1996,7 @@ def group_participants(data, column_mapping):
                         province, city = parts[1], parts[2]
                         location_info = f"Province: {province}, City: {city}"
                     else:
-                        location_info = "Philippines"
+                        location_info = f"Province: {parts[1]}"
                 else:  # INT_
                     parts = location_key.split('_', 2)
                     if len(parts) >= 3:
@@ -2071,8 +2103,10 @@ def group_participants(data, column_mapping):
         sorted_provinces.sort(key=lambda x: (region_order.get(x[3], 5), str(x[0]).lower() if x[0] else ''))
         
         for original_province, province_norm, province_members, region in sorted_provinces:
-            # Use the original province name for display
+            # Use the original province name for display, but normalize MM
             province = original_province
+            if isinstance(province, str) and province.lower() in ['metro manila', 'mm']:
+                province = 'MM'
             # Further group by city within each province
             city_groups = defaultdict(list)
             for r in province_members:
@@ -2105,7 +2139,9 @@ def group_participants(data, column_mapping):
                 i = 0
                 while i + 5 <= len(members):
                     group_members = members[i:i+5]
-                    location_info = f"Province: {province}, City: {city_norm}"
+                    # Get original city name from first member
+                    original_city = get_value(group_members[0], 'city', 'Unknown City')
+                    location_info = f"Province: {province}, City: {original_city}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
                     # Mark all members as assigned
                     for member in group_members:
@@ -2125,7 +2161,9 @@ def group_participants(data, column_mapping):
                     if len(members) >= 5:
                         # Can form a complete group from this city
                         group_members = members[:5]
-                        location_info = f"Province: {province}, City: {city_norm}"
+                        # Get original city name from first member
+                        original_city = get_value(group_members[0], 'city', 'Unknown City')
+                        location_info = f"Province: {province}, City: {original_city}"
                         grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
                         # Mark all members as assigned
                         for member in group_members:
@@ -2178,79 +2216,79 @@ def group_participants(data, column_mapping):
                                 assigned_users.add(member_email)
                             group_counter += 1
         
-    # INTERNATIONAL GROUPING: Country → State → Timezone regions
+    # INTERNATIONAL GROUPING: Country + internationalState if exists, else just Country
     # Uses timezone clustering for geographic proximity (Step 5)
         if non_ph_rows:
-            # Group by country first, then state, then timezone region
+            # Group by country + internationalState if exists
             country_groups = defaultdict(list)
             for r in non_ph_rows:
                 country = get_value(r, 'country', 'Unknown Country')
                 # Normalize country name
                 country_norm = country.strip().lower() if isinstance(country, str) else str(country).strip().lower()
-                country_groups[country_norm].append(r)
-            
-            # Sort countries alphabetically
-            sorted_countries = sorted(country_groups.items())
-            
-            for country_norm, country_members in sorted_countries:
-                # Use the original country name for display
-                country = get_value(country_members[0], 'country', 'Unknown Country')
-                # Further group by state within each country
-                state_groups = defaultdict(list)
-                for r in country_members:
-                    state = get_value(r, 'state', 'Unknown State')
-                    # Normalize state name
-                    state_norm = state.strip().lower() if isinstance(state, str) else str(state).strip().lower()
-                    state_groups[state_norm].append(r)
                 
-                # Sort states alphabetically
-                sorted_state_names = sorted(state_groups.keys())
+                if 'internationalState' in column_mapping and column_mapping['internationalState']:
+                    int_state = str(get_value(r, 'internationalState', '')).strip()
+                    if int_state:
+                        group_key = f"{country_norm}_{int_state}"
+                    else:
+                        group_key = country_norm
+                else:
+                    group_key = country_norm
                 
-                # Create groups from each state
-                for state_norm in sorted_state_names:
-                    members = state_groups[state_norm]
-                    # Use the original state name for display
-                    state = get_value(members[0], 'state', 'Unknown State')
-                    
-                    # Create complete groups of 5 from this state
-                    i = 0
-                    while i + 5 <= len(members):
-                        group_members = members[i:i+5]
-                        location_info = f"Country: {country}, State: {state}"
-                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                country_groups[group_key].append(r)
+            
+            # Sort groups
+            sorted_groups = sorted(country_groups.items())
+            
+            for group_key, group_members in sorted_groups:
+                # Parse the group_key to get country and state info
+                if '_' in group_key:
+                    country_norm, int_state = group_key.split('_', 1)
+                    country = get_value(group_members[0], 'country', 'Unknown Country')
+                    location_info = f"Country: {country}, State: {int_state}"
+                else:
+                    country_norm = group_key
+                    country = get_value(group_members[0], 'country', 'Unknown Country')
+                    location_info = f"Country: {country}"
+                # Create groups from this country/state group
+                members = group_members
+                
+                # Create complete groups of 5
+                i = 0
+                while i + 5 <= len(members):
+                    group = members[i:i+5]
+                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                    # Mark all members as assigned
+                    for member in group:
+                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                        assigned_users.add(member_email)
+                    group_counter += 1
+                    i += 5
+                
+                # Handle remaining members
+                if i < len(members):
+                    remaining_members = members[i:]
+                    if len(remaining_members) >= 5:
+                        # Can form a complete group
+                        group = remaining_members[:5]
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
                         # Mark all members as assigned
-                        for member in group_members:
+                        for member in group:
                             member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
                             assigned_users.add(member_email)
                         group_counter += 1
-                        i += 5
+                        remaining_members = remaining_members[5:]
                     
-                    # Handle remaining members from this state
-                    if i < len(members):
-                        remaining_members = members[i:]
-                        if len(remaining_members) >= 5:
-                            # Can form a complete group
-                            group_members = remaining_members[:5]
-                            location_info = f"Country: {country}, State: {state}"
-                            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-                            # Mark all members as assigned
-                            for member in group_members:
-                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                                assigned_users.add(member_email)
-                            group_counter += 1
-                            remaining_members = remaining_members[5:]
-                        
-                        # Add remaining members to a mixed group if any
-                        if remaining_members:
-                            # For now, just create a small group with remaining members
-                            # We'll handle international mixed groups later
-                            location_info = f"Country: {country}, State: {state}"
-                            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = remaining_members
-                            # Mark all members as assigned
-                            for member in remaining_members:
-                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                                assigned_users.add(member_email)
-                            group_counter += 1
+                    # Add remaining members to a mixed group if any
+                    if remaining_members:
+                        # For now, just create a small group with remaining members
+                        # We'll handle international mixed groups later
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = remaining_members
+                        # Mark all members as assigned
+                        for member in remaining_members:
+                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                            assigned_users.add(member_email)
+                        group_counter += 1
     
     # After processing all countries/states, create international mixed groups from any remaining unassigned international users
     remaining_international = []
@@ -2274,7 +2312,7 @@ def group_participants(data, column_mapping):
             i += 5
 
     # Merge small groups based on geographic proximity
-    grouped = merge_small_groups(grouped, column_mapping, email_mapping)
+    # grouped = merge_small_groups(grouped, column_mapping, email_mapping)
     
     # Generate diagnostic report
     generate_diagnostic_report(user_tracking, original_count, solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
@@ -2283,7 +2321,7 @@ def group_participants(data, column_mapping):
     generate_missing_users_analysis(user_tracking, original_count, solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
     
     # Check for duplicates
-    check_for_duplicates(solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping)
+    check_for_duplicates(solo_groups, grouped, excluded_users, multi_member_requested_groups, column_mapping, email_mapping)
     
     # Return the updated groups - use original requested groups without combining
     return solo_groups, grouped, excluded_users, multi_member_requested_groups, {}
@@ -2337,8 +2375,83 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     
     # Write requested groups (accountability buddies)
     if requested_groups:
-        # Sort requested groups by descending order of number of users
-        sorted_requested_groups = sorted(requested_groups, key=lambda g: len(g), reverse=True)
+        # Sort requested groups by location priority: MM first, then provinces, then international
+        def get_requested_group_location_priority(group):
+            """Get location priority for a requested group"""
+            if not group:
+                return 3
+            first_member = group[0]
+            residing_ph = safe_get_value(first_member, column_mapping.get('residing_ph', ''), '0').lower()
+            
+            if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                province = safe_get_value(first_member, column_mapping.get('province', ''), '')
+                if isinstance(province, str) and province.lower() in ['metro manila', 'mm']:
+                    return 0  # MM first
+                else:
+                    return 1  # Philippine provinces second
+            else:
+                return 2  # International countries last
+        
+        def get_requested_group_city(group):
+            """Get city name for a requested group"""
+            if not group:
+                return ''
+            first_member = group[0]
+            residing_ph = safe_get_value(first_member, column_mapping.get('residing_ph', ''), '0').lower()
+            
+            if residing_ph in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
+                province = safe_get_value(first_member, column_mapping.get('province', ''), '')
+                if isinstance(province, str) and province.lower() in ['metro manila', 'mm']:
+                    return safe_get_value(first_member, column_mapping.get('city', ''), '')
+            return ''
+        
+        def get_city_priority(city_name):
+            """Get priority for city-based sorting within MM"""
+            city_order = {
+                'Quezon City': 1,
+                'Taguig': 2,
+                'Makati': 3,
+                'Parañaque': 4,
+                'Pasig': 5,
+                'San Juan': 6,
+                'Mandaluyong': 7,
+                'Manila': 8,
+                'Las Piñas': 9,
+                'Muntinlupa': 10,
+                'Navotas': 11,
+                'Marikina': 12,
+                'Malabon': 13,
+                'Valenzuela': 14,
+                'Caloocan': 15,
+                'Pateros': 16
+            }
+            return city_order.get(city_name, 99)
+        
+        def get_requested_group_gender_priority(group):
+            """Get gender priority for a requested group"""
+            if not group:
+                return 8
+            first_member = group[0]
+            gender_pref = safe_get_value(first_member, column_mapping.get('gender_preference', ''), '')
+            gender_order = {
+                'same_gender': 1,
+                'female': 2,
+                'lgbtq+_female': 3,
+                'male': 4,
+                'lgbtq+_male': 5,
+                'no_preference': 6,
+                'other': 7,
+                'unknown': 8
+            }
+            return gender_order.get(gender_pref, 9)
+        
+        sorted_requested_groups = sorted(requested_groups, key=lambda g: (
+            get_requested_group_location_priority(g),  # Location first
+            get_city_priority(get_requested_group_city(g)),  # City within MM
+            get_requested_group_gender_priority(g),  # Gender preference
+            -len(g),  # Larger groups first
+            str(g[0].get(column_mapping.get('user_id'), ''))  # User ID as tiebreaker
+        ))
         green_fill = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
         group_row_indices = []
         for idx, group in enumerate(sorted_requested_groups, 1):
@@ -2486,13 +2599,18 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             # Combine coach names with "/" separator if they're different
             combined_coach_names = ' / '.join(sorted(set(coach_names))) if coach_names else ''
             
+            # Normalize province for display
+            province = member.get(column_mapping.get('province'), '')
+            if province and str(province).lower() == 'metro manila':
+                province = 'MM'
+            
             row.extend([
                 member.get(column_mapping.get('gender_identity'), ''),
                 member.get(column_mapping.get('sex'), ''),
                 member.get(column_mapping.get('residing_ph'), ''),
                 member.get(column_mapping.get('gender_preference'), ''),
                 member.get(column_mapping.get('country'), ''),
-                member.get(column_mapping.get('province'), ''),
+                province,
                 member.get(column_mapping.get('city'), ''),
                 member.get(column_mapping.get('state'), ''),
                 combined_coach_names
@@ -2590,7 +2708,136 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
     # Write grouped participants
     # Track regular groups with 5 or more members for highlighting
     regular_group_row_indices = []
-    for group_name, members in grouped.items():
+    
+    # Sort groups by location priority: MM first, then provinces, then international
+    def get_location_priority(group_name):
+        if 'Province: MM' in group_name:
+            return 0  # MM first
+        elif 'Province:' in group_name and 'MM' not in group_name:
+            return 1  # Philippine provinces second
+        elif 'Country:' in group_name:
+            return 2  # International countries last
+        else:
+            return 3  # Any other groups
+    
+    def get_city_from_group_name(group_name):
+        """Extract city from MM group name for sorting"""
+        if 'Province: MM, City:' in group_name:
+            start = group_name.find('City:') + 5
+            end = group_name.find(')', start)
+            if end == -1:
+                end = len(group_name)
+            city = group_name[start:end].strip()
+            return city
+        return ''
+    
+    def get_country_from_group_name(group_name):
+        """Extract country from international group name for sorting"""
+        if 'Country:' in group_name:
+            start = group_name.find('Country:') + 8
+            end = group_name.find(',', start)
+            if end == -1:
+                end = group_name.find(')', start)
+                if end == -1:
+                    end = len(group_name)
+            country = group_name[start:end].strip()
+            return country
+        return ''
+    
+    def get_state_from_group_name(group_name):
+        """Extract state from international group name for sorting"""
+        if 'State:' in group_name:
+            start = group_name.find('State:') + 6
+            end = group_name.find(')', start)
+            if end == -1:
+                end = len(group_name)
+            state = group_name[start:end].strip()
+            return state
+        return ''
+    
+    def get_country_priority(country_name):
+        """Get priority for country-based sorting"""
+        # Prioritize major countries/regions
+        country_order = {
+            'United States': 1,
+            'Canada': 2,
+            'United Kingdom': 3,
+            'Australia': 4,
+            'United Arab Emirates': 5,
+            'Singapore': 6,
+            'Japan': 7,
+            'Germany': 8,
+            'New Zealand': 9,
+            'China': 10,
+            'Hong Kong': 11,
+            'Vietnam': 12,
+            'Norway': 13,
+            'Netherlands': 14,
+            'Spain': 15,
+            'Turkey': 16,
+            'Oman': 17,
+            'Qatar': 18,
+            'Saudi Arabia': 19,
+            'Cayman Islands': 20
+        }
+        return country_order.get(country_name, 99)
+    
+    def get_city_priority(city_name):
+        """Get priority for city-based sorting within MM"""
+        city_order = {
+            'Quezon City': 1,
+            'Taguig': 2,
+            'Makati': 3,
+            'Parañaque': 4,
+            'Pasig': 5,
+            'San Juan': 6,
+            'Mandaluyong': 7,
+            'Manila': 8,
+            'Las Piñas': 9,
+            'Muntinlupa': 10,
+            'Navotas': 11,
+            'Marikina': 12,
+            'Malabon': 13,
+            'Valenzuela': 14,
+            'Caloocan': 15,
+            'Pateros': 16
+        }
+        return city_order.get(city_name, 99)
+    
+    def get_gender_key_from_group_name(group_name):
+        """Extract gender key from group name for sorting"""
+        if '(' in group_name and ')' in group_name:
+            start = group_name.find('(') + 1
+            end = group_name.find(')', start)
+            info = group_name[start:end]
+            parts = info.split(', ')
+            if len(parts) >= 1:
+                return parts[0]  # gender_key
+        return 'unknown'
+    
+    def get_gender_priority(gender_key):
+        """Get priority for gender-based sorting within location"""
+        gender_order = {
+            'female': 1,
+            'lgbtq+_female': 2,
+            'male': 3,
+            'lgbtq+_male': 4,
+            'no_preference': 5,
+            'other': 6,
+            'unknown': 7
+        }
+        return gender_order.get(gender_key, 8)
+    
+    sorted_groups = sorted(grouped.items(), key=lambda x: (
+        get_location_priority(x[0]),  # Location first
+        get_country_priority(get_country_from_group_name(x[0])),  # Country priority for international
+        get_city_priority(get_city_from_group_name(x[0])),  # City within MM (all same city groups together)
+        get_state_from_group_name(x[0]),  # State within country
+        -len(x[1]),  # Larger groups first
+        x[0]  # Alphabetical as tiebreaker
+    ))
+    
+    for group_name, members in sorted_groups:
         # --- SORT small group members ---
         if len(members) < 7:
             members = sorted(members, key=lambda m: (
@@ -2800,15 +3047,103 @@ def main():
             print(f"  ❌ {key}: NOT FOUND")
     
     # Convert DataFrame to list of dictionaries
-    # --- SORTING STEP: Sort by province, city, gender_preference, gender_identity, user_id if columns exist ---
-    sort_columns = []
-    for col_key in ['province', 'city', 'gender_preference', 'gender_identity', 'user_id']:
-        col_name = column_mapping.get(col_key)
-        if col_name and col_name in df.columns:
-            sort_columns.append(col_name)
-    if sort_columns:
-        df = df.sort_values(by=sort_columns)
-        print(f"\n📊 Data sorted by: {sort_columns}")
+    # --- SORTING STEP: Separate Philippines and non-Philippines residents, sort each group appropriately ---
+    ph_column = column_mapping.get('residing_ph')
+    if ph_column and ph_column in df.columns:
+        # Filter Philippines residents
+        ph_residents = df[df[ph_column].astype(str).str.lower().isin(['1', '1.0', 'true', 'yes', 'ph', 'philippines'])].copy()
+        # Filter non-Philippines residents
+        non_ph_residents = df[~df[ph_column].astype(str).str.lower().isin(['1', '1.0', 'true', 'yes', 'ph', 'philippines'])].copy()
+        
+        # Sort Philippines residents by province frequency (largest first), then city frequency within province (largest first), then other columns
+        if not ph_residents.empty:
+            # Sort provinces by frequency descending
+            province_counts = ph_residents['province'].value_counts()
+            province_order = province_counts.index
+            ph_residents['province'] = ph_residents['province'].astype('category').cat.set_categories(province_order)
+            
+            # Add city count within province
+            ph_residents['city_count'] = ph_residents.groupby(['province', 'city'])['city'].transform('count')
+            
+            ph_sort_columns = []
+            for col_key in ['province', 'city_count', 'city', 'gender_preference', 'gender_identity', 'user_id']:
+                if col_key == 'city_count':
+                    ph_sort_columns.append('city_count')
+                else:
+                    col_name = column_mapping.get(col_key)
+                    if col_name and col_name in ph_residents.columns:
+                        ph_sort_columns.append(col_name)
+            ph_residents = ph_residents.sort_values(by=ph_sort_columns, ascending=[True, False, True, True, True, True])
+            ph_residents = ph_residents.drop(columns=['city_count'])
+        
+        # Sort non-Philippines residents by country frequency (largest first), then internationalState frequency within country (largest first), then internationalCity frequency within state (largest first), then other columns
+        if not non_ph_residents.empty:
+            # Sort countries by frequency descending
+            country_counts = non_ph_residents['country'].value_counts()
+            country_order = country_counts.index
+            non_ph_residents['country'] = non_ph_residents['country'].astype('category').cat.set_categories(country_order)
+            
+            # Add internationalState count within country if column exists
+            if 'internationalState' in non_ph_residents.columns:
+                non_ph_residents['state_count'] = non_ph_residents.groupby(['country', 'internationalState'])['internationalState'].transform('count')
+                state_col = 'internationalState'
+            else:
+                # Fallback to state
+                state_col_name = column_mapping.get('state')
+                if state_col_name and state_col_name in non_ph_residents.columns:
+                    non_ph_residents['state_count'] = non_ph_residents.groupby(['country', state_col_name])[state_col_name].transform('count')
+                    state_col = state_col_name
+                else:
+                    state_col = None
+            
+            # Add internationalCity count within country and state if columns exist
+            if 'internationalCity' in non_ph_residents.columns and state_col:
+                non_ph_residents['city_count'] = non_ph_residents.groupby(['country', state_col, 'internationalCity'])['internationalCity'].transform('count')
+                city_col = 'internationalCity'
+            else:
+                city_col_name = column_mapping.get('city')
+                if city_col_name and city_col_name in non_ph_residents.columns and state_col:
+                    non_ph_residents['city_count'] = non_ph_residents.groupby(['country', state_col, city_col_name])[city_col_name].transform('count')
+                    city_col = city_col_name
+                else:
+                    city_col = None
+            
+            non_ph_sort_columns = ['country']
+            if state_col:
+                non_ph_sort_columns.extend(['state_count', state_col])
+            if city_col:
+                non_ph_sort_columns.extend(['city_count', city_col])
+            
+            # Add other columns
+            for col_key in ['gender_preference', 'gender_identity', 'user_id']:
+                col_name = column_mapping.get(col_key)
+                if col_name and col_name in non_ph_residents.columns:
+                    non_ph_sort_columns.append(col_name)
+            
+            ascending_order = [True] * len(non_ph_sort_columns)
+            # Set descending for count columns
+            for i, col in enumerate(non_ph_sort_columns):
+                if col.endswith('_count'):
+                    ascending_order[i] = False
+            
+            non_ph_residents = non_ph_residents.sort_values(by=non_ph_sort_columns, ascending=ascending_order)
+            # Drop temporary count columns
+            count_cols = [col for col in non_ph_sort_columns if col.endswith('_count')]
+            non_ph_residents = non_ph_residents.drop(columns=count_cols, errors='ignore')
+        
+        # Combine sorted dataframes: Philippines first, then non-Philippines
+        df = pd.concat([ph_residents, non_ph_residents], ignore_index=True)
+        print(f"\n📊 Data sorted: Philippines residents by province/city, non-Philippines by country/state")
+    else:
+        # Fallback to original sorting if residing_ph column not found
+        sort_columns = []
+        for col_key in ['province', 'city', 'gender_preference', 'gender_identity', 'user_id']:
+            col_name = column_mapping.get(col_key)
+            if col_name and col_name in df.columns:
+                sort_columns.append(col_name)
+        if sort_columns:
+            df = df.sort_values(by=sort_columns)
+            print(f"\n📊 Data sorted by: {sort_columns}")
     data = df.to_dict('records')
     
     print(f"\n🚀 Starting group assignment process...")
