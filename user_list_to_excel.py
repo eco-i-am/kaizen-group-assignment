@@ -10,9 +10,17 @@ def safe_get_value(data_dict, key, default=''):
     if not data_dict or key not in data_dict:
         return default
     value = data_dict[key]
-    if pd.isna(value) or value is None:
+    if value is None:
         return default
-    return str(value).strip()
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    str_val = str(value).strip()
+    if str_val.lower() in ('nan', 'none'):
+        return default
+    return str_val
 
 # File paths - Same as group_assignment_to_excel.py
 INPUT_FILE = 'merged_users_grouping_preferences_20250719_133755.xlsx'  # Change this to your merged file
@@ -39,7 +47,8 @@ EXPECTED_COLUMNS = {
     'temporary_team_name': ['temporaryTeamName', 'temporary_team_name', 'temp_team_name', 'team_name'],
     'previous_coach_name': ['previousCoachName', 'previous_coach_name', 'prev_coach_name', 'coach_name'],
     'current_goal': ['currentGoal', 'current_goal', 'goal'],
-    'age_group': ['ageGroup', 'age_group', 'age']
+    'age_group': ['ageGroup', 'age_group', 'age'],
+    'joining_as_student': ['joining_as_student', 'joiningAsStudent', 'is_student', 'student']
 }
 
 # Helper for color coding based on sex
@@ -53,6 +62,12 @@ LGBTQ_FONT_COLOR = '800000'  # Maroon
 
 # Light Green color for get_bigger goal IDs
 GREEN_COLOR = '90EE90'  # Light Green
+
+# Grey color for solo participants
+SOLO_COLOR = 'D3D3D3'  # Light Grey
+
+# Orange for excluded / not participating
+EXCLUDED_COLOR = 'FFD580'  # Light Orange
 
 def format_location_display(member, column_mapping):
     """Format location display based on residing_ph status with enhanced logic"""
@@ -122,7 +137,7 @@ def find_column_mapping(df):
 
     return mapping
 
-def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None, has_accountability_buddies=None, current_goal=None, is_user_id=False):
+def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None, has_accountability_buddies=None, current_goal=None, is_user_id=False, go_solo=None, is_excluded=False):
     """Apply color coding based on sex, font styling, and special fill coloring"""
     # Apply fill color based on sex (default)
     fill_color = None
@@ -133,6 +148,14 @@ def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None,
     # Special fill color for get_bigger goal (overrides sex color for User ID)
     if is_user_id and current_goal and str(current_goal).lower() == 'bulking':
         fill_color = GREEN_COLOR
+
+    # Grey overrides sex/bulking for solo participants
+    if go_solo and str(go_solo).lower() in ('1', '1.0', 'true', 'yes'):
+        fill_color = SOLO_COLOR
+
+    # Orange overrides everything for excluded / not participating
+    if is_excluded:
+        fill_color = EXCLUDED_COLOR
 
     # Apply fill color if set
     if fill_color:
@@ -186,7 +209,7 @@ def format_name_display(name, kaizen_client_type):
 
     return formatted_name
 
-def save_user_list_to_excel(data, filename_or_buffer, column_mapping):
+def save_user_list_to_excel(data, filename_or_buffer, column_mapping, merged_df=None):
     """Save user list to Excel with 6 columns: User ID, Name, Location, Coach and Age, Email Address, Group Mates"""
     wb = Workbook()
     ws = wb.active
@@ -234,6 +257,9 @@ def save_user_list_to_excel(data, filename_or_buffer, column_mapping):
         gender_preference = safe_get_value(member, column_mapping.get('gender_preference', ''), '')
         has_accountability_buddies = safe_get_value(member, column_mapping.get('has_accountability_buddies', ''), '')
         current_goal = safe_get_value(member, column_mapping.get('current_goal', ''), '')
+        go_solo = safe_get_value(member, column_mapping.get('go_solo', ''), '')
+        joining_as_student = safe_get_value(member, column_mapping.get('joining_as_student', ''), '')
+        is_excluded = joining_as_student.lower() in ('false', '0', '0.0', 'no')
 
         # Format coach name with age group in parentheses
         # If coach_name is blank (NaN), keep it blank regardless of age_group
@@ -262,23 +288,36 @@ def save_user_list_to_excel(data, filename_or_buffer, column_mapping):
         ws.append(row)
 
         # Apply color coding and text formatting to the newly added row
-        # Note: ws.append() creates cells, so we can format them after
         current_row = ws.max_row
 
-        # Get the cells and apply formatting
+        # Columns 1-3 get full formatting (color + font)
         user_id_cell = ws.cell(row=current_row, column=1)
         name_cell = ws.cell(row=current_row, column=2)
         location_cell = ws.cell(row=current_row, column=3)
 
-        # Ensure cells have values set (should already be set by ws.append)
         user_id_cell.value = member.get(column_mapping.get('user_id'), '')
         name_cell.value = formatted_name
         location_cell.value = location_display
 
-        # Apply formatting to User ID, Name, and Location columns
-        apply_color_to_cell(user_id_cell, sex, gender_identity, gender_preference, has_accountability_buddies, current_goal, is_user_id=True)  # User ID
-        apply_color_to_cell(name_cell, sex, gender_identity, gender_preference, has_accountability_buddies, current_goal, is_user_id=False)  # Name
-        apply_color_to_cell(location_cell, sex, gender_identity, gender_preference, has_accountability_buddies, current_goal, is_user_id=False)  # Location
+        apply_color_to_cell(user_id_cell, sex, gender_identity, gender_preference, has_accountability_buddies, current_goal, is_user_id=True, go_solo=go_solo, is_excluded=is_excluded)
+        apply_color_to_cell(name_cell, sex, gender_identity, gender_preference, has_accountability_buddies, current_goal, is_user_id=False, go_solo=go_solo, is_excluded=is_excluded)
+        apply_color_to_cell(location_cell, sex, gender_identity, gender_preference, has_accountability_buddies, current_goal, is_user_id=False, go_solo=go_solo, is_excluded=is_excluded)
+
+        # Columns 4-6 get the same background fill as the rest of the row
+        sex_lower = str(sex).lower().strip() if sex else ''
+        if is_excluded:
+            row_fill_color = EXCLUDED_COLOR
+        elif go_solo and str(go_solo).lower() in ('1', '1.0', 'true', 'yes'):
+            row_fill_color = SOLO_COLOR
+        elif sex_lower in SEX_COLOR:
+            row_fill_color = SEX_COLOR[sex_lower]
+        else:
+            row_fill_color = None
+
+        if row_fill_color:
+            fill = PatternFill(start_color=row_fill_color, end_color=row_fill_color, fill_type="solid")
+            for col in range(4, 7):
+                ws.cell(row=current_row, column=col).fill = fill
 
     # Auto-adjust column widths
     for column in ws.columns:
@@ -293,6 +332,26 @@ def save_user_list_to_excel(data, filename_or_buffer, column_mapping):
         adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
         ws.column_dimensions[column_letter].width = adjusted_width
 
+    # Merged Data sheet
+    if merged_df is not None and not merged_df.empty:
+        import openpyxl
+        ws_merged = wb.create_sheet(title="Merged Data")
+        # Write header
+        ws_merged.append(list(merged_df.columns))
+        # Write rows
+        for row in merged_df.itertuples(index=False, name=None):
+            ws_merged.append(list(row))
+        # Auto-adjust column widths (capped)
+        for column in ws_merged.columns:
+            max_length = 0
+            col_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if cell.value and len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except Exception:
+                    pass
+            ws_merged.column_dimensions[col_letter].width = min(max_length + 2, 50)
 
     # Check if filename_or_buffer is a string (file path) or BytesIO buffer
     if isinstance(filename_or_buffer, str):

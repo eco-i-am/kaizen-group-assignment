@@ -41,6 +41,7 @@ from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font
 import re
+from city_coordinates import get_city_coords, haversine_miles, proximity_sort
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -259,6 +260,12 @@ LGBTQ_FONT_COLOR = '800000'  # Maroon font color
 # Fill color for participants with 'get_bigger' goal
 GREEN_COLOR = '90EE90'  # Light Green fill for User IDs
 
+# Grey for solo participants
+SOLO_COLOR = 'D3D3D3'  # Light Grey
+
+# Orange for excluded / not participating
+EXCLUDED_COLOR = 'FFD580'  # Light Orange
+
 # ============================================================================
 # LOCATION FORMATTING FUNCTIONS
 # ============================================================================
@@ -366,14 +373,14 @@ def get_philippines_region(province):
     """Get the Philippines region for a given province"""
     if not province:
         return 'unknown'
-    
+
     province_lower = str(province).strip().lower()
-    
+
     for region, provinces in PHILIPPINES_REGIONS.items():
         for region_province in provinces:
             if province_lower == region_province.lower():
                 return region
-    
+
     # If not found in the mapping, try to guess based on common patterns
     if any(keyword in province_lower for keyword in ['manila', 'quezon', 'caloocan', 'makati', 'pasig', 'taguig', 'marikina', 'mandaluyong', 'las piñas', 'parañaque', 'muntinlupa', 'valenzuela', 'malabon', 'navotas', 'san juan', 'pasay', 'pateros']):
         return 'luzon'
@@ -381,8 +388,63 @@ def get_philippines_region(province):
         return 'visayas'
     elif any(keyword in province_lower for keyword in ['davao', 'cotabato', 'zamboanga', 'bukidnon', 'misamis', 'agusan', 'surigao', 'lanao', 'maguindanao', 'sulu', 'tawi-tawi', 'basilan']):
         return 'mindanao'
-    
+
     return 'unknown'
+
+# Metro Manila geographic zones for proximity-based merging of small city groups
+MM_ZONES = {
+    'north':   ['caloocan', 'malabon', 'navotas', 'valenzuela', 'quezon city'],
+    'central': ['manila', 'mandaluyong', 'makati', 'san juan', 'pasay', 'pateros'],
+    'east':    ['marikina', 'pasig'],
+    'south':   ['las piñas', 'muntinlupa', 'parañaque', 'taguig'],
+}
+
+def get_mm_zone(city):
+    """Return the MM geographic zone for a city name (normalised lower-case or original)."""
+    if not city:
+        return 'unknown'
+    city_lower = str(city).strip().lower()
+    for zone, cities in MM_ZONES.items():
+        if city_lower in cities:
+            return zone
+    return 'unknown'
+
+# North America timezone zones used for USA↔Canada proximity merging
+NA_TIMEZONES = {
+    'pacific':  {
+        'united states': ['california', 'washington', 'oregon', 'nevada', 'alaska'],
+        'canada':        ['british columbia', 'yukon'],
+    },
+    'mountain': {
+        'united states': ['colorado', 'utah', 'wyoming', 'montana', 'idaho', 'new mexico', 'arizona'],
+        'canada':        ['alberta', 'northwest territories'],
+    },
+    'central':  {
+        'united states': ['texas', 'oklahoma', 'kansas', 'nebraska', 'south dakota', 'north dakota',
+                          'minnesota', 'iowa', 'missouri', 'arkansas', 'louisiana', 'mississippi',
+                          'illinois', 'wisconsin', 'indiana', 'kentucky', 'tennessee', 'alabama'],
+        'canada':        ['saskatchewan', 'manitoba'],
+    },
+    'eastern':  {
+        'united states': ['new york', 'new jersey', 'pennsylvania', 'ohio', 'michigan', 'georgia',
+                          'florida', 'south carolina', 'north carolina', 'virginia', 'west virginia',
+                          'maryland', 'delaware', 'new hampshire', 'vermont', 'maine',
+                          'massachusetts', 'rhode island', 'connecticut', 'mississippi', 'alabama'],
+        'canada':        ['ontario', 'quebec', 'new brunswick', 'nova scotia',
+                          'prince edward island', 'newfoundland and labrador', 'nunavut'],
+    },
+}
+
+NA_COUNTRIES = {'united states', 'canada'}
+
+def get_na_timezone(country_norm, state):
+    """Return the NA timezone zone (pacific/mountain/central/eastern/other) for a USA or Canada participant."""
+    state_lower = str(state).strip().lower() if state else ''
+    country_lower = str(country_norm).strip().lower()
+    for tz, country_states in NA_TIMEZONES.items():
+        if country_lower in country_states and state_lower in country_states[country_lower]:
+            return tz
+    return 'other'
 
 # Define timezone regions for international grouping
 TIMEZONE_REGIONS = {
@@ -591,7 +653,7 @@ def get_country_region(country):
             return region
     return 'other'
 
-def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None, has_accountability_buddies=None, current_goal=None, is_user_id=False, accountability_buddies=None):
+def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None, has_accountability_buddies=None, current_goal=None, is_user_id=False, accountability_buddies=None, go_solo=False, is_excluded=False):
     """Apply color coding based on sex, font styling, and special fill coloring"""
     # Apply fill color based on sex (default)
     fill_color = None
@@ -602,6 +664,14 @@ def apply_color_to_cell(cell, sex, gender_identity=None, gender_preference=None,
     # Special fill color for get_bigger goal (overrides sex color for User ID)
     if is_user_id and current_goal and str(current_goal).lower() == 'bulking':
         fill_color = GREEN_COLOR
+
+    # Grey overrides sex/bulking for solo participants
+    if go_solo:
+        fill_color = SOLO_COLOR
+
+    # Orange overrides everything for excluded / not participating
+    if is_excluded:
+        fill_color = EXCLUDED_COLOR
 
     # Apply fill color if set
     if fill_color:
@@ -1380,7 +1450,53 @@ def group_participants(data, column_mapping):
                 elif key == 'state':
                     return row[19] if len(row) > 19 else default
             return default
-    
+
+    def sort_by_goal_age(members):
+        """Sort members within a location bucket by goal then age, so similar
+        participants naturally cluster into the same groups of 5.
+        Location is always the primary bucket — this only reorders within it."""
+        goal_order = {
+            'bulking': 1, 'get_bigger': 1,
+            'maintain': 2, 'maintenance': 2, 'recomp': 2,
+            'lose_weight': 3, 'cut': 3, 'cutting': 3, 'weight_loss': 3,
+        }
+        age_order = {
+            'under 18': 1, '18-24': 2, '25-34': 3,
+            '35-44': 4, '45-54': 5, '55+': 6,
+        }
+
+        def sort_key(r):
+            goal = str(get_value(r, 'current_goal', '')).lower().strip()
+            age  = str(get_value(r, 'age_group',    '')).lower().strip()
+            return (
+                goal_order.get(goal, 99),   # known goals first, unknown last
+                age_order.get(age, 99),     # known ages first, unknown last
+                str(get_value(r, 'user_id', '')),  # stable tiebreaker
+            )
+
+        return sorted(members, key=sort_key)
+
+    def sort_fillers_by_group(fillers, group_members):
+        """Sort filler candidates so those sharing goal/age with the group come first."""
+        if not group_members:
+            return sort_by_goal_age(fillers)
+        # Use the most common goal/age in the current group as the target
+        goals = [str(get_value(m, 'current_goal', '')).lower().strip() for m in group_members]
+        ages  = [str(get_value(m, 'age_group',    '')).lower().strip() for m in group_members]
+        target_goal = max(set(goals), key=goals.count) if goals else ''
+        target_age  = max(set(ages),  key=ages.count)  if ages  else ''
+
+        def filler_key(f):
+            f_goal = str(get_value(f, 'current_goal', '')).lower().strip()
+            f_age  = str(get_value(f, 'age_group',    '')).lower().strip()
+            return (
+                0 if f_goal == target_goal else 1,
+                0 if f_age  == target_age  else 1,
+                str(get_value(f, 'user_id', '')),
+            )
+
+        return sorted(fillers, key=filler_key)
+
     # Initialize tracking for all users
     for i, row in enumerate(data):
         user_id = get_value(row, 'user_id', f'Row_{i}')
@@ -1941,8 +2057,8 @@ def group_participants(data, column_mapping):
 
         # Process each location group - create groups of 5 same_gender participants
         for location_key, participants in location_groups.items():
-            # Sort participants for consistent ordering
-            participants.sort(key=lambda p: get_value(p, 'user_id', ''))
+            # Sort by goal then age within the location bucket
+            participants[:] = sort_by_goal_age(participants)
 
             # Create groups of 5 from same_gender participants
             i = 0
@@ -1979,7 +2095,8 @@ def group_participants(data, column_mapping):
                         if filler_location == location_key:
                             available_fillers.append(filler)
 
-                    # Add fillers to reach target of 5 (but don't exceed)
+                    # Sort fillers so those matching the group's goal/age come first
+                    available_fillers = sort_fillers_by_group(available_fillers, group_members)
                     fillers_needed = 5 - len(group_members)
                     fillers_to_add = available_fillers[:fillers_needed]
 
@@ -2066,250 +2183,227 @@ def group_participants(data, column_mapping):
         gender_pref_groups[gender_key].append(row)
 
     # Step 5: Within each gender group, apply geographic grouping
+    non_ph_rows = []  # accumulates all international rows across gender groups
     for gender_key, rows in gender_pref_groups.items():
         # Separate Philippines vs International residents
         ph_rows = []
-        non_ph_rows = []
+        loop_non_ph_rows = []
         
         for r in rows:
             ph_val = str(get_value(r, 'residing_ph', '0')).strip().lower()
             if ph_val in ['1', '1.0', 'true', 'yes', 'ph', 'philippines']:
                 ph_rows.append(r)
             elif ph_val in ['0', '0.0', 'false', 'no']:
-                non_ph_rows.append(r)
+                loop_non_ph_rows.append(r)
             else:
                 # For unknown values, treat as international
-                non_ph_rows.append(r)
+                loop_non_ph_rows.append(r)
+        non_ph_rows.extend(loop_non_ph_rows)
         
-    # PHILIPPINES GROUPING: Province → City → Same-city groups
-    # Prioritizes keeping participants from same city together (Step 5)
+    # PHILIPPINES GROUPING: Province → City (hard boundaries — cities never mixed together,
+    # MM never mixed with other Luzon provinces)
         province_groups = defaultdict(list)
         for r in ph_rows:
             province = get_value(r, 'province', 'Unknown Province')
-            # Normalize province name
             province_norm = province.strip().lower() if isinstance(province, str) else str(province).strip().lower()
             province_groups[province_norm].append(r)
-        
-        # Sort provinces by Philippines regions (Luzon, Visayas, Mindanao)
+
+        # Sort provinces by PH region (Luzon → Visayas → Mindanao → unknown)
         sorted_provinces = []
         for province_norm, province_members in province_groups.items():
-            # Get the original province name from the first member for sorting
             original_province = get_value(province_members[0], 'province', 'Unknown Province')
-            region = get_philippines_region(original_province)
-            sorted_provinces.append((original_province, province_norm, province_members, region))
-        
-        # Sort by region first (Luzon, Visayas, Mindanao), then by province name within each region
+            ph_region = get_philippines_region(original_province)
+            sorted_provinces.append((original_province, province_norm, province_members, ph_region))
+
         region_order = {'luzon': 1, 'visayas': 2, 'mindanao': 3, 'unknown': 4}
         sorted_provinces.sort(key=lambda x: (region_order.get(x[3], 5), str(x[0]).lower() if x[0] else ''))
-        
-        for original_province, province_norm, province_members, region in sorted_provinces:
-            # Use the original province name for display, but normalize MM
-            province = original_province
-            if isinstance(province, str) and province.lower() in ['metro manila', 'mm']:
-                province = 'MM'
-            # Further group by city within each province
-            city_groups = defaultdict(list)
+
+        for original_province, province_norm, province_members, ph_region in sorted_provinces:
+            province_display = 'MM' if province_norm in ['metro manila', 'mm'] else original_province
+
+            # Group by city
+            city_members = defaultdict(list)
             for r in province_members:
                 city = get_value(r, 'city', 'Unknown City')
-                # Normalize city name
                 city_norm = city.strip().lower() if isinstance(city, str) else str(city).strip().lower()
-                city_groups[city_norm].append(r)
-            
-            # --- SORT CITIES ALPHABETICALLY ---
-            sorted_city_names = sorted(city_groups.keys())
-            
-            # --- NEW LOGIC: Prioritize same-city groups from entire province pool ---
-            # Collect all participants from this province
-            all_province_members = []
-            for city_norm in sorted_city_names:  # Use sorted city names
-                members = city_groups[city_norm]
-                all_province_members.extend(members)
-            
-            # Group by city within the province
-            city_members = defaultdict(list)
-            for member in all_province_members:
-                city = get_value(member, 'city', 'Unknown City')
-                city_norm = city.strip().lower() if isinstance(city, str) else str(city).strip().lower()
-                city_members[city_norm].append(member)
-            
-            # First, create complete groups (5 members) from each city
-            remaining_by_city = {}
-            for city_norm, members in city_members.items():
-                # Create complete groups of 5 from this city
+                city_members[city_norm].append(r)
+
+            province_remainder = []
+            for city_norm in sorted(city_members.keys()):
+                members = sort_by_goal_age(city_members[city_norm])
+                original_city = get_value(members[0], 'city', 'Unknown City')
+                location_info = f"Province: {province_display}, City: {original_city}"
                 i = 0
                 while i + 5 <= len(members):
                     group_members = members[i:i+5]
-                    # Get original city name from first member
-                    original_city = get_value(group_members[0], 'city', 'Unknown City')
-                    location_info = f"Province: {province}, City: {original_city}"
                     grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-                    # Mark all members as assigned
                     for member in group_members:
                         member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
                         assigned_users.add(member_email)
                     group_counter += 1
                     i += 5
-                
-                # Keep remaining members from this city
+                # City remainder → province pool for cross-city merging within same province
                 if i < len(members):
-                    remaining_by_city[city_norm] = members[i:]
-            
-            # Now handle remaining members - prioritize same-city groups
-            if remaining_by_city:
-                # First, try to form same-city groups from remaining members
-                for city_norm, members in list(remaining_by_city.items()):
-                    if len(members) >= 5:
-                        # Can form a complete group from this city
-                        group_members = members[:5]
-                        # Get original city name from first member
-                        original_city = get_value(group_members[0], 'city', 'Unknown City')
-                        location_info = f"Province: {province}, City: {original_city}"
-                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-                        # Mark all members as assigned
-                        for member in group_members:
+                    province_remainder.extend(members[i:])
+
+            # Merge city remainders within the same province (never cross-province)
+            if province_remainder:
+                province_remainder = sort_by_goal_age(province_remainder)
+                location_info = f"Province: {province_display}, Mixed Cities"
+                i = 0
+                while i + 5 <= len(province_remainder):
+                    group_members = province_remainder[i:i+5]
+                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    for member in group_members:
+                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                        assigned_users.add(member_email)
+                    group_counter += 1
+                    i += 5
+                # Final province remainder — keep as-is, never merged with another province
+                if i < len(province_remainder):
+                    group_members = province_remainder[i:]
+                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
+                    for member in group_members:
+                        member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                        assigned_users.add(member_email)
+                    group_counter += 1
+
+    # INTERNATIONAL GROUPING
+    # - USA + Canada: proximity-based merging by shared timezone (Pacific/Mountain/Central/Eastern)
+    # - All other countries: never merged across country lines
+        if loop_non_ph_rows:
+            # Bucket by country, then by state within each country
+            country_buckets = defaultdict(lambda: defaultdict(list))
+            country_display_name = {}
+            na_rows_intl = []  # USA + Canada collected for timezone-based proximity merging
+
+            for r in loop_non_ph_rows:
+                country = get_value(r, 'country', 'Unknown Country')
+                country_raw = extract_country_from_field(country)
+                country_norm = normalize_country_name(country_raw)
+                country_display_name[country_norm] = country_raw
+
+                if 'internationalState' in column_mapping and column_mapping['internationalState']:
+                    int_state = str(get_value(r, 'internationalState', '')).strip()
+                else:
+                    int_state = ''
+
+                if country_norm in NA_COUNTRIES:
+                    na_rows_intl.append((r, country_norm, int_state))
+                else:
+                    country_buckets[country_norm][int_state].append(r)
+
+            # ── Non-NA countries: no cross-country merging ───────────────────
+            for country_norm in sorted(country_buckets.keys()):
+                country_display = country_display_name.get(country_norm, country_norm)
+                state_buckets = country_buckets[country_norm]
+                country_remainder = []
+
+                for state_key in sorted(state_buckets.keys()):
+                    members = sort_by_goal_age(state_buckets[state_key])
+                    location_info = (f"Country: {country_display}, State: {state_key}"
+                                     if state_key else f"Country: {country_display}")
+                    i = 0
+                    while i + 5 <= len(members):
+                        group = members[i:i+5]
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                        for member in group:
                             member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
                             assigned_users.add(member_email)
                         group_counter += 1
-                        remaining_by_city[city_norm] = members[5:]
-                    elif len(members) == 0:
-                        del remaining_by_city[city_norm]
-                
-                # Collect all final remaining members (less than 5 per city)
-                final_remaining = []
-                for members in remaining_by_city.values():
-                    final_remaining.extend(members)
-                
-                # Create mixed-city groups from final remaining - keep city-units together
-                if final_remaining:
-                    # Group final remaining by city - use remaining_by_city directly
-                    final_by_city = []
-                    for city, members in remaining_by_city.items():
-                        if members:  # Only add non-empty city units
-                            final_by_city.append(members)
-                    
-                    # Greedily combine city-units into groups of up to 5, never splitting a city-unit
+                        i += 5
+                    country_remainder.extend(members[i:])
+
+                if country_remainder:
+                    country_remainder = sort_by_goal_age(country_remainder)
+                    has_states = any(k for k in state_buckets)
+                    location_info = (f"Country: {country_display}, Mixed States"
+                                     if has_states else f"Country: {country_display}")
                     i = 0
-                    while i < len(final_by_city):
-                        group = []
-                        while i < len(final_by_city) and len(group) + len(final_by_city[i]) <= 5:
-                            group.extend(final_by_city[i])
-                            i += 1
-                        if group:
-                            # Check if all from same city
-                            cities_in_group = set()
-                            for member in group:
-                                city = get_value(member, 'city', 'Unknown City')
-                                cities_in_group.add(city)
-                            
-                            if len(cities_in_group) == 1:
-                                # All from same city
-                                city_name = list(cities_in_group)[0]
-                                location_info = f"Province: {province}, City: {city_name}"
-                            else:
-                                # Mixed cities
-                                location_info = f"Province: {province}, Mixed Cities"
-                            
-                            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
-                            # Mark all members as assigned
-                            for member in group:
-                                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                                assigned_users.add(member_email)
-                            group_counter += 1
-        
-    # INTERNATIONAL GROUPING: Country + internationalState if exists, else just Country
-    # Uses timezone clustering for geographic proximity (Step 5)
-        if non_ph_rows:
-            # Group by country + internationalState if exists
-            country_groups = defaultdict(list)
-            for r in non_ph_rows:
-                country = get_value(r, 'country', 'Unknown Country')
-                # Normalize country name
-                country_norm = country.strip().lower() if isinstance(country, str) else str(country).strip().lower()
-                
-                if 'internationalState' in column_mapping and column_mapping['internationalState']:
-                    int_state = str(get_value(r, 'internationalState', '')).strip()
-                    if int_state:
-                        group_key = f"{country_norm}_{int_state}"
-                    else:
-                        group_key = country_norm
-                else:
-                    group_key = country_norm
-                
-                country_groups[group_key].append(r)
-            
-            # Sort groups
-            sorted_groups = sorted(country_groups.items())
-            
-            for group_key, group_members in sorted_groups:
-                # Parse the group_key to get country and state info
-                if '_' in group_key:
-                    country_norm, int_state = group_key.split('_', 1)
-                    country = get_value(group_members[0], 'country', 'Unknown Country')
-                    location_info = f"Country: {country}, State: {int_state}"
-                else:
-                    country_norm = group_key
-                    country = get_value(group_members[0], 'country', 'Unknown Country')
-                    location_info = f"Country: {country}"
-                # Create groups from this country/state group
-                members = group_members
-                
-                # Create complete groups of 5
+                    while i + 5 <= len(country_remainder):
+                        group = country_remainder[i:i+5]
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                        for member in group:
+                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                            assigned_users.add(member_email)
+                        group_counter += 1
+                        i += 5
+                    if i < len(country_remainder):
+                        group = country_remainder[i:]
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                        for member in group:
+                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                            assigned_users.add(member_email)
+                        group_counter += 1
+
+            # ── USA + Canada: timezone proximity merging ─────────────────────
+            if na_rows_intl:
+                # Step 1: full groups of 5 per state/province
+                na_state_buckets = defaultdict(list)  # (country_norm, state) -> members
+                for r, country_norm, int_state in na_rows_intl:
+                    na_state_buckets[(country_norm, int_state)].append(r)
+
+                na_tz_remainder = defaultdict(list)  # timezone -> members that didn't fill a group
+
+                for (country_norm, state_key), members in sorted(na_state_buckets.items()):
+                    country_display = country_display_name.get(country_norm, country_norm).title()
+                    members = sort_by_goal_age(members)
+                    location_info = (f"Country: {country_display}, State: {state_key}"
+                                     if state_key else f"Country: {country_display}")
+                    i = 0
+                    while i + 5 <= len(members):
+                        group = members[i:i+5]
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                        for member in group:
+                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                            assigned_users.add(member_email)
+                        group_counter += 1
+                        i += 5
+                    if i < len(members):
+                        tz = get_na_timezone(country_norm, state_key)
+                        na_tz_remainder[tz].extend(members[i:])
+
+                # Step 2: merge remainders by shared timezone, ordered by city proximity
+                na_global_remainder = []
+                for tz in ['pacific', 'mountain', 'central', 'eastern', 'other']:
+                    raw = na_tz_remainder.get(tz, [])
+                    if not raw:
+                        continue
+                    # Sort by goal/age first, then re-order by proximity within that sorted list
+                    raw = sort_by_goal_age(raw)
+                    members = proximity_sort(
+                        raw,
+                        get_city_fn=lambda m: get_value(m, 'internationalCity', '') or get_value(m, 'city', ''),
+                        get_state_fn=lambda m: get_value(m, 'internationalState', '') or get_value(m, 'state', ''),
+                    )
+                    tz_label = tz.title()
+                    location_info = f"NA ({tz_label} Time)"
+                    i = 0
+                    while i + 5 <= len(members):
+                        group = members[i:i+5]
+                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
+                        for member in group:
+                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
+                            assigned_users.add(member_email)
+                        group_counter += 1
+                        i += 5
+                    na_global_remainder.extend(members[i:])
+
+                # Step 3: NA-wide mix — apply proximity sort one final time
+                na_global_remainder = proximity_sort(
+                    sort_by_goal_age(na_global_remainder),
+                    get_city_fn=lambda m: get_value(m, 'internationalCity', '') or get_value(m, 'city', ''),
+                    get_state_fn=lambda m: get_value(m, 'internationalState', '') or get_value(m, 'state', ''),
+                )
                 i = 0
-                while i + 5 <= len(members):
-                    group = members[i:i+5]
-                    grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
-                    # Mark all members as assigned
+                while i < len(na_global_remainder):
+                    group = na_global_remainder[i:i+5]
+                    grouped[f"Group {group_counter} ({gender_key}, NA Mixed)"] = group
                     for member in group:
                         member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
                         assigned_users.add(member_email)
                     group_counter += 1
                     i += 5
-                
-                # Handle remaining members
-                if i < len(members):
-                    remaining_members = members[i:]
-                    if len(remaining_members) >= 5:
-                        # Can form a complete group
-                        group = remaining_members[:5]
-                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group
-                        # Mark all members as assigned
-                        for member in group:
-                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                            assigned_users.add(member_email)
-                        group_counter += 1
-                        remaining_members = remaining_members[5:]
-                    
-                    # Add remaining members to a mixed group if any
-                    if remaining_members:
-                        # For now, just create a small group with remaining members
-                        # We'll handle international mixed groups later
-                        grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = remaining_members
-                        # Mark all members as assigned
-                        for member in remaining_members:
-                            member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                            assigned_users.add(member_email)
-                        group_counter += 1
-    
-    # After processing all countries/states, create international mixed groups from any remaining unassigned international users
-    remaining_international = []
-    for r in non_ph_rows:
-        member_email = normalize_email(get_value(r, 'email', ''), email_mapping)
-        if member_email not in assigned_users:
-            remaining_international.append(r)
-    
-    if remaining_international:
-        # Create mixed groups from remaining international users
-        i = 0
-        while i < len(remaining_international):
-            group_members = remaining_international[i:i+5]
-            location_info = f"International Mixed"
-            grouped[f"Group {group_counter} ({gender_key}, {location_info})"] = group_members
-            # Mark all members as assigned
-            for member in group_members:
-                member_email = normalize_email(get_value(member, 'email', ''), email_mapping)
-                assigned_users.add(member_email)
-            group_counter += 1
-            i += 5
 
     # Merge small groups based on geographic proximity
     # grouped = merge_small_groups(grouped, column_mapping, email_mapping)
@@ -2702,9 +2796,9 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
                 has_accountability_buddies = safe_get_value(member, column_mapping.get('has_accountability_buddies', ''), '')
                 current_goal = safe_get_value(member, column_mapping.get('current_goal', ''), '')
                 accountability_buddies = safe_get_value(member, column_mapping.get('accountability_buddies', ''), '')
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies)  # User ID
-                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies)  # Name
-    
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=2 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies, go_solo=True)  # User ID
+                apply_color_to_cell(ws.cell(row=ws.max_row, column=3 + i*4), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies, go_solo=True)  # Name
+
     # Write grouped participants
     # Track regular groups with 5 or more members for highlighting
     regular_group_row_indices = []
@@ -2995,9 +3089,76 @@ def save_to_excel(solo_groups, grouped, filename_or_buffer, column_mapping, excl
             has_accountability_buddies = user.get(column_mapping.get('has_accountability_buddies'), '')
             current_goal = user.get(column_mapping.get('current_goal'), '')
             accountability_buddies = user.get(column_mapping.get('accountability_buddies'), '')
-            apply_color_to_cell(ws.cell(row=ws.max_row, column=2), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies)  # User ID
-            apply_color_to_cell(ws.cell(row=ws.max_row, column=3), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies)  # Name
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=2), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=True, accountability_buddies=accountability_buddies, is_excluded=True)  # User ID
+            apply_color_to_cell(ws.cell(row=ws.max_row, column=3), sex, gender_identity, gender_pref, has_accountability_buddies, current_goal, is_user_id=False, accountability_buddies=accountability_buddies, is_excluded=True)  # Name
     
+    # ============================================================================
+    # LEGEND SHEET
+    # ============================================================================
+    ws_legend = wb.create_sheet(title="Legend")
+
+    header_font = Font(bold=True, size=12)
+    section_font = Font(bold=True, size=11)
+
+    def legend_row(label, color_hex=None, font_color=None, is_bold=False, is_underline=False, note=''):
+        """Append one legend row and apply its formatting."""
+        ws_legend.append([label, note])
+        row_idx = ws_legend.max_row
+        sample_cell = ws_legend.cell(row=row_idx, column=1)
+        if color_hex:
+            sample_cell.fill = PatternFill(start_color=color_hex, end_color=color_hex, fill_type="solid")
+        sample_cell.font = Font(
+            color=font_color,
+            bold=is_bold,
+            underline='single' if is_underline else None
+        )
+
+    # --- Title ---
+    ws_legend.append(["COLOR & FORMATTING LEGEND", ""])
+    ws_legend.cell(row=ws_legend.max_row, column=1).font = header_font
+    ws_legend.append([])
+
+    # --- Background fill colors ---
+    ws_legend.append(["BACKGROUND COLORS (User ID and Name cells)", ""])
+    ws_legend.cell(row=ws_legend.max_row, column=1).font = section_font
+
+    legend_row("Male",                color_hex='ADD8E6', note="Light blue fill")
+    legend_row("Female",              color_hex='FFC0CB', note="Pink fill")
+    legend_row("Bulking goal",        color_hex='90EE90', note="Light green fill (User ID cell only)")
+    legend_row("Solo participant",    color_hex='D3D3D3', note="Grey fill (overrides sex color)")
+    legend_row("Not participating",   color_hex='FFD580', note="Orange fill (overrides everything)")
+    ws_legend.append([])
+
+    # --- Group label colors ---
+    ws_legend.append(["GROUP LABEL COLORS (Group Name cell)", ""])
+    ws_legend.cell(row=ws_legend.max_row, column=1).font = section_font
+
+    legend_row("Requested group ≥5 members",       color_hex='90EE90', note="Light green on group name")
+    legend_row("Regular group ≥5 members same loc", color_hex='87CEEB', note="Sky blue on group name")
+    ws_legend.append([])
+
+    # --- Font / text formatting ---
+    ws_legend.append(["TEXT FORMATTING", ""])
+    ws_legend.cell(row=ws_legend.max_row, column=1).font = section_font
+
+    legend_row("LGBTQ+",                         font_color='800000', note="Maroon text color")
+    legend_row("Same-gender preference",          is_bold=True,        note="Bold name")
+    legend_row("Has accountability buddies",      is_underline=True,   note="Underlined name")
+    ws_legend.append([])
+
+    # --- Name prefix/suffix conventions ---
+    ws_legend.append(["NAME PREFIXES / SUFFIXES", ""])
+    ws_legend.cell(row=ws_legend.max_row, column=1).font = section_font
+
+    ws_legend.append(["**Name",   "Team member"])
+    ws_legend.append(["Name*",    "Returning – latest season"])
+    ws_legend.append(["Name**",   "Returning – other season"])
+    ws_legend.append([])
+
+    # --- Column widths ---
+    ws_legend.column_dimensions['A'].width = 38
+    ws_legend.column_dimensions['B'].width = 40
+
     # Check if filename_or_buffer is a string (file path) or BytesIO buffer
     if isinstance(filename_or_buffer, str):
         wb.save(filename_or_buffer)

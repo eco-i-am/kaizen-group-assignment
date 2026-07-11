@@ -8,16 +8,54 @@ import sys
 import os
 
 def main():
+    # Configure console output to support UTF-8 (emojis) on Windows
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except AttributeError:
+            pass
+
     print("🏋️ Starting Kaizen Group Assignment System...")
     print("📱 Opening web interface...")
     
-    # Check if streamlit is installed
-    try:
-        import streamlit
-        print(f"✅ Streamlit version {streamlit.__version__} found")
-    except ImportError:
-        print("❌ Streamlit not found. Installing...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit"])
+    # Check if all required dependencies are installed
+    print("📦 Checking dependencies...")
+    dependencies = {
+        "streamlit": "streamlit",
+        "pandas": "pandas",
+        "openpyxl": "openpyxl",
+        "plotly": "plotly",
+        "pydantic": "pydantic",
+        "rich": "rich",
+        "dotenv": "python-dotenv",
+        "click": "click"
+    }
+    
+    missing_any = False
+    for module_name, package_name in dependencies.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing_any = True
+            break
+            
+    if missing_any:
+        print("❌ Some dependencies are missing. Installing from requirements.txt...")
+        try:
+            requirements_file = "requirements.txt"
+            if os.path.exists(requirements_file):
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", requirements_file])
+            else:
+                # Fallback to installing key packages individually
+                packages = list(dependencies.values())
+                subprocess.check_call([sys.executable, "-m", "pip", "install"] + packages)
+            print("✅ All dependencies installed successfully!")
+        except Exception as e:
+            print(f"❌ Error installing dependencies: {e}")
+            print("💡 Trying to continue anyway...")
+    else:
+        print("✅ All dependencies found")
     
     # Run the Streamlit app
     try:

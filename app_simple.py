@@ -714,7 +714,7 @@ def show_user_list_page():
                 buffer = io.BytesIO()
 
                 # Generate the Excel file
-                save_user_list_to_excel(data_dicts, buffer, column_mapping)
+                save_user_list_to_excel(data_dicts, buffer, column_mapping, merged_df=data)
 
                 buffer.seek(0)
 
@@ -897,7 +897,7 @@ def show_data_management_page():
                     buffer = io.BytesIO()
 
                     # Generate the Excel file
-                    save_user_list_to_excel(data_dicts, buffer, column_mapping)
+                    save_user_list_to_excel(data_dicts, buffer, column_mapping, merged_df=data)
 
                     buffer.seek(0)
 
@@ -1051,11 +1051,18 @@ def show_api_page():
         help="Bearer token for API authentication"
     )
 
+    # Program selection
+    program_id = st.text_input(
+        "📋 Program ID",
+        value="10",
+        help="The program ID to fetch grouping preferences for (e.g. 7 for Season 9, 10 for Season 10)"
+    )
+
     # Comprehensive fetch and merge button (FIRST - AFTER TOKEN)
     st.subheader("🔄 Complete Data Fetch & Merge")
 
-    st.markdown("""
-    **One-click solution**: Fetch all users, then fetch grouping preferences for Season 9,
+    st.markdown(f"""
+    **One-click solution**: Fetch all users, then fetch grouping preferences for Program {program_id},
     merge the data, and download the complete merged Excel file.
     """)
 
@@ -1065,164 +1072,173 @@ def show_api_page():
                 st.error("❌ Please enter a valid access token.")
                 return
 
-            with st.spinner("Step 1/4: Fetching all users..."):
-                # Fetch all users
-                users_url = "https://portal.thelazylifter.com/api/users"
-                fetch_all_api_data(users_url, access_token, max_pages=500)
-                users_data = st.session_state.get('all_api_records', [])
+            grouping_url = f"https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/{program_id}"
+            users_base_url = "https://portal.thelazylifter.com/api/users"
 
-            with st.spinner("Step 2/4: Fetching grouping preferences..."):
-                # Fetch grouping preferences for season 9
-                grouping_url = "https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7"
-                fetch_all_api_data(grouping_url, access_token, max_pages=500)
-                grouping_data = st.session_state.get('all_api_records', [])
+            # Step 1: Fetch grouping preferences (already program-filtered — small dataset)
+            progress = st.progress(0)
+            status = st.empty()
+            status.text(f"Step 1/3: Fetching grouping preferences for Program {program_id}...")
+            grouping_data, g_pages, g_items = _fetch_all_pages_raw(grouping_url, access_token, max_pages=500)
+            if not grouping_data:
+                st.error("❌ No grouping preferences found for this program.")
+                return
+            progress.progress(0.33)
+            st.success(f"📋 Grouping preferences: {len(grouping_data)} records across {g_pages} page(s)")
 
-            with st.spinner("Step 3/4: Merging data..."):
-                # Merge the data
-                if users_data and grouping_data:
-                    # Convert to DataFrames for merging
-                    users_df = pd.DataFrame(users_data)
-                    grouping_df = pd.DataFrame(grouping_data)
+            # Step 2: Extract unique user IDs, then fetch only those users in parallel
+            # (avoids paging through the entire user database)
+            grouping_df = pd.DataFrame(grouping_data)
+            user_field = next((c for c in ['user', 'user_id', 'userid'] if c in grouping_df.columns), None)
+            if not user_field:
+                st.error("❌ Could not find user field in grouping preferences data.")
+                return
 
-                    # Perform merge on user field
-                    # First, check what fields are available for merging
-                    if 'id' in users_df.columns and any(col in grouping_df.columns for col in ['user', 'user_id']):
-                        # Find the user field in grouping data
-                        user_field = None
-                        for col in ['user', 'user_id', 'userid']:
-                            if col in grouping_df.columns:
-                                user_field = col
-                                break
+            if user_field == 'user':
+                import re as _re
+                raw_ids = grouping_df['user'].astype(str).str.extract(r'/users/(\d+)')[0].dropna().unique().tolist()
+            else:
+                raw_ids = grouping_df[user_field].dropna().unique().tolist()
+            user_ids = [str(int(float(uid))) for uid in raw_ids if str(uid).replace('.', '').isdigit()]
 
-                        if user_field:
-                            # Handle different user field formats
-                            if user_field == 'user':
-                                # User field might be a URL like /api/users/123, extract the ID
-                                grouping_df['user_id'] = grouping_df['user'].astype(str).str.extract(r'/users/(\d+)').astype(float)
-                            elif user_field == 'user_id':
-                                grouping_df['user_id'] = grouping_df['user_id']
+            status.text(f"Step 2/3: Fetching {len(user_ids)} users in parallel...")
+            users_data = _fetch_users_by_ids(users_base_url, user_ids, access_token)
+            if not users_data:
+                st.error("❌ Could not fetch user details.")
+                return
+            progress.progress(0.66)
+            st.success(f"👥 Users fetched: {len(users_data)} (targeted fetch — no full user dump needed)")
 
-                            # Merge with grouping preferences as left table (preserves all grouping preference rows)
-                            merged_df = pd.merge(grouping_df, users_df, left_on='user_id', right_on='id', how='left', suffixes=('_x', '_y'))
+            # Step 3: Merge and build Excel
+            status.text("Step 3/3: Merging data and building Excel file...")
+            users_df = pd.DataFrame(users_data)
+            grouping_df['user_id'] = grouping_df['user'].astype(str).str.extract(r'/users/(\d+)')[0].astype(float) \
+                if user_field == 'user' else grouping_df[user_field]
 
-                            # Reorder columns to match the requested format
-                            desired_columns = [
-                                '@id_x', '@type_x', 'id_x', 'user', 'program', 'genderIdentity',
-                                'kaizenClientType', 'createdAt_x', 'updatedAt', 'sex', 'residingInPhilippines',
-                                'liftingExperience', 'groupGenderPreference', 'currentGoal', 'followUpLevel',
-                                'accountabilityBuddies', 'province', 'city', 'goSolo', 'hasAccountabilityBuddies',
-                                'retainPreviousCoach', 'joiningAsStudent', 'ageGroup', 'previousCoachName',
-                                'country', 'locationIdentifier', 'internationalCity', 'internationalState',
-                                '@id_y', '@type_y', 'id_y', 'email', 'name', 'createdAt_y',
-                                'OnboardingTasksCompleted', 'firstName', 'lastName', 'nickname', 'guid',
-                                'trackers', 'enrolledPrograms'
-                            ]
+            merged_df = pd.merge(grouping_df, users_df, left_on='user_id', right_on='id', how='left', suffixes=('_x', '_y'))
 
-                            # Keep only columns that exist in the merged dataframe
-                            final_columns = [col for col in desired_columns if col in merged_df.columns]
-                            merged_df = merged_df[final_columns]
+            desired_columns = [
+                '@id_x', '@type_x', 'id_x', 'user', 'program', 'genderIdentity',
+                'kaizenClientType', 'createdAt_x', 'updatedAt', 'sex', 'residingInPhilippines',
+                'liftingExperience', 'groupGenderPreference', 'currentGoal', 'followUpLevel',
+                'accountabilityBuddies', 'province', 'city', 'goSolo', 'hasAccountabilityBuddies',
+                'retainPreviousCoach', 'joiningAsStudent', 'ageGroup', 'previousCoachName',
+                'country', 'locationIdentifier', 'internationalCity', 'internationalState',
+                '@id_y', '@type_y', 'id_y', 'email', 'name', 'createdAt_y',
+                'OnboardingTasksCompleted', 'firstName', 'lastName', 'nickname', 'guid',
+                'trackers', 'enrolledPrograms'
+            ]
+            final_columns = [col for col in desired_columns if col in merged_df.columns]
+            merged_df = merged_df[final_columns]
 
-                            # Store merged data
-                            st.session_state.merged_data = merged_df
-                            st.session_state.column_mapping = {}  # Will be set when needed
+            # Filter: keep only participants enrolled in Kaizen S10
+            if 'enrolledPrograms' in merged_df.columns:
+                before_filter = len(merged_df)
+                merged_df = merged_df[
+                    merged_df['enrolledPrograms'].astype(str).str.contains('Kaizen S10', case=False, na=False)
+                ]
+                filtered_out = before_filter - len(merged_df)
+                if filtered_out > 0:
+                    st.info(f"ℹ️ Filtered out {filtered_out} records not enrolled in Kaizen S10 ({len(merged_df)} remaining)")
 
-                            st.success(f"✅ Data merged successfully! Users: {len(users_df)}, Grouping: {len(grouping_df)}, Merged: {len(merged_df)}")
+            st.session_state.merged_data = merged_df
+            st.session_state.users_data = users_data
+            st.session_state.grouping_data = grouping_data
+            st.session_state.column_mapping = {}
 
-                        else:
-                            st.error("❌ Could not find user field in grouping data for merging")
-                            return
-                    else:
-                        st.error("❌ Required fields not found for merging (users.id or grouping.user)")
-                        return
-                else:
-                    st.error("❌ Failed to fetch both users and grouping data")
-                    return
+            # Normalize types — NaN becomes '' (not 'nan')
+            for df in [users_df, grouping_df, merged_df]:
+                for col in df.columns:
+                    try:
+                        df[col] = df[col].apply(
+                            lambda x: str(x) if isinstance(x, (list, dict, tuple))
+                            else ('' if pd.isna(x) else x)
+                        )
+                        df[col] = df[col].astype(str).replace('nan', '').replace('None', '')
+                    except Exception:
+                        df[col] = "Data conversion error"
 
-            with st.spinner("Step 4/4: Creating merged Excel file..."):
-                # Create Excel file with multiple sheets like the manual process
-                import io
-                from datetime import datetime
+            # Clean accountabilityBuddies
+            if 'accountabilityBuddies' in merged_df.columns:
+                if 'hasAccountabilityBuddies' in merged_df.columns:
+                    mask = merged_df['hasAccountabilityBuddies'].astype(str).str.lower().isin(['false', '0', '0.0', 'no'])
+                    merged_df.loc[mask, 'accountabilityBuddies'] = ''
 
-                # Store merged data in session state for group creation
-                st.session_state.merged_data = merged_df
-
-                # Normalize data types to prevent display issues (same as manual process)
-                for df in [users_df, grouping_df, merged_df]:
-                    for col in df.columns:
-                        try:
-                            df[col] = df[col].apply(lambda x: str(x) if isinstance(x, (list, dict, tuple)) or pd.isna(x) else x)
-                            df[col] = df[col].astype(str)
-                        except:
-                            df[col] = "Data conversion error"
-
-                # Clean accountabilityBuddies field (same as manual process)
-                if 'accountabilityBuddies' in merged_df.columns:
-                    if 'hasAccountabilityBuddies' in merged_df.columns:
-                        merged_df['hasAccountabilityBuddies'] = merged_df['hasAccountabilityBuddies'].astype(str).str.lower()
-                        mask = merged_df['hasAccountabilityBuddies'].isin(['false', '0', '0.0', 'no'])
-                        merged_df.loc[mask, 'accountabilityBuddies'] = ''
-
-                    def clean_accountability_buddies(value):
-                        if pd.isna(value) or value == 'None' or value == 'nan':
+                def clean_accountability_buddies(value):
+                    if pd.isna(value) or value in ('None', 'nan'):
+                        return ''
+                    if isinstance(value, str):
+                        if value in ('[None, None]', '[None]', "{'1': None}"):
                             return ''
-                        if isinstance(value, str):
-                            if value == '[None, None]' or value == '[None]' or value == "{'1': None}":
-                                return ''
-                            cleaned = value.strip('[]').replace('"', '').replace("'", '')
-                            if cleaned == '' or cleaned == 'None':
-                                return ''
-                            emails = [email.strip() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
-                            if not emails:
-                                return ''
-                            return value
-                        return value
+                        cleaned = value.strip('[]').replace('"', '').replace("'", '')
+                        if not cleaned or cleaned == 'None':
+                            return ''
+                        emails = [e.strip() for e in cleaned.split(',') if e.strip() and '@' in e.strip()]
+                        if not emails:
+                            return ''
+                    return value
 
-                    merged_df['accountabilityBuddies'] = merged_df['accountabilityBuddies'].apply(clean_accountability_buddies)
+                merged_df['accountabilityBuddies'] = merged_df['accountabilityBuddies'].apply(clean_accountability_buddies)
 
-                # Create Excel file with multiple sheets (same as manual process)
-                buffer = io.BytesIO()
+            # Build Excel
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                merged_df.to_excel(writer, sheet_name='Merged Data', index=False)
+                users_df.to_excel(writer, sheet_name='Users Data', index=False)
+                grouping_df.to_excel(writer, sheet_name='Grouping Preferences', index=False)
+                pd.DataFrame({
+                    'Metric': ['Total Records', 'Users Data', 'Grouping Preferences', 'Merged Records'],
+                    'Count': [len(merged_df), len(users_df), len(grouping_df), len(merged_df)]
+                }).to_excel(writer, sheet_name='Summary', index=False)
+            buffer.seek(0)
 
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    # Main merged data
-                    merged_df.to_excel(writer, sheet_name='Merged Data', index=False)
+            progress.progress(1.0)
+            status.empty()
 
-                    # Individual datasets
-                    users_df.to_excel(writer, sheet_name='Users Data', index=False)
-                    grouping_df.to_excel(writer, sheet_name='Grouping Preferences', index=False)
+            st.success(f"✅ Done! {len(grouping_data)} grouping prefs + {len(users_data)} users → {len(merged_df)} merged records")
 
-                    # Summary sheet
-                    summary_data = {
-                        'Metric': ['Total Records', 'Users Data', 'Grouping Preferences', 'Merged Records'],
-                        'Count': [len(merged_df), len(users_df), len(grouping_df), len(merged_df)]
-                    }
-                    summary_df = pd.DataFrame(summary_data)
-                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Merged Records", len(merged_df))
+            with col2:
+                st.metric("Users Fetched", len(users_data))
+            with col3:
+                st.metric("Grouping Preferences", len(grouping_data))
 
-                buffer.seek(0)
+            # Auto-generate User List (shown first)
+            st.subheader("📋 User List")
+            try:
+                from user_list_to_excel import save_user_list_to_excel, find_column_mapping as find_column_mapping_user
 
-                st.success(f"✅ Successfully merged data! Result: {len(merged_df)} records")
+                ul_column_mapping = find_column_mapping_user(merged_df)
+                data_dicts = merged_df.to_dict('records')
 
-                # Show merged data info (same as manual process)
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Records", len(merged_df))
-                with col2:
-                    st.metric("Users Data", len(users_df))
-                with col3:
-                    st.metric("Grouping Preferences", len(grouping_df))
+                ul_buffer = io.BytesIO()
+                save_user_list_to_excel(data_dicts, ul_buffer, ul_column_mapping, merged_df=merged_df)
+                ul_buffer.seek(0)
 
-                # Download button (same as manual process)
+                st.success(f"✅ User list generated — {len(data_dicts)} participants")
                 st.download_button(
-                    label="📥 Download Merged Excel File",
-                    data=buffer.getvalue(),
-                    file_name=f"merged_users_grouping_preferences_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    label="📥 Download User List Excel",
+                    data=ul_buffer.getvalue(),
+                    file_name=f"user_list_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
+                    key="fetch_merge_user_list_download"
                 )
+            except Exception as ul_err:
+                st.warning(f"⚠️ Could not auto-generate user list: {ul_err}")
 
-                # Show preview of merged data (same as manual process)
-                st.subheader("📊 Merged Data Preview")
-                st.dataframe(merged_df.head(10), use_container_width=True)
+            st.download_button(
+                label="📥 Download Merged Excel File",
+                data=buffer.getvalue(),
+                file_name=f"merged_users_grouping_preferences_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+            st.subheader("📊 Merged Data Preview")
+            st.dataframe(merged_df.head(10), use_container_width=True)
 
         except Exception as e:
             st.error(f"❌ Error during fetch and merge: {str(e)}")
@@ -1248,7 +1264,7 @@ def show_api_page():
     
     # Set API URL based on selection
     if api_endpoint == "Grouping Preferences":
-        api_url = "https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7"
+        api_url = f"https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/{program_id}"
     elif api_endpoint == "Contexts Grouping Preference":
         api_url = "https://portal.thelazylifter.com/api/contexts/GroupingPreference"
     elif api_endpoint == "Users":
@@ -1285,176 +1301,6 @@ def show_api_page():
         test_api_connection(api_url, access_token, page_number)
 
 
-    if st.button("🚀 Fetch & Merge All Data", type="primary", use_container_width=True, key="duplicate_fetch_merge_button"):
-        try:
-            if not access_token or access_token.strip() == "":
-                st.error("❌ Please enter a valid access token.")
-                return
-
-            with st.spinner("Step 1/4: Fetching all users..."):
-                # Fetch all users
-                users_url = "https://portal.thelazylifter.com/api/users"
-                fetch_all_api_data(users_url, access_token, max_pages=500)
-                users_data = st.session_state.get('all_api_records', [])
-
-            with st.spinner("Step 2/4: Fetching grouping preferences..."):
-                # Fetch grouping preferences for season 9
-                grouping_url = "https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7"
-                fetch_all_api_data(grouping_url, access_token, max_pages=500)
-                grouping_data = st.session_state.get('all_api_records', [])
-
-            with st.spinner("Step 3/4: Merging data..."):
-                # Merge the data
-                if users_data and grouping_data:
-                    # Convert to DataFrames for merging
-                    users_df = pd.DataFrame(users_data)
-                    grouping_df = pd.DataFrame(grouping_data)
-
-                    # Perform merge on user field
-                    # First, check what fields are available for merging
-                    if 'id' in users_df.columns and any(col in grouping_df.columns for col in ['user', 'user_id']):
-                        # Find the user field in grouping data
-                        user_field = None
-                        for col in ['user', 'user_id', 'userid']:
-                            if col in grouping_df.columns:
-                                user_field = col
-                                break
-
-                        if user_field:
-                            # Handle different user field formats
-                            if user_field == 'user':
-                                # User field might be a URL like /api/users/123, extract the ID
-                                grouping_df['user_id'] = grouping_df['user'].astype(str).str.extract(r'/users/(\d+)').astype(float)
-                            elif user_field == 'user_id':
-                                grouping_df['user_id'] = grouping_df['user_id']
-
-                            # Merge with grouping preferences as left table (preserves all grouping preference rows)
-                            merged_df = pd.merge(grouping_df, users_df, left_on='user_id', right_on='id', how='left', suffixes=('_x', '_y'))
-
-                            # Reorder columns to match the requested format
-                            desired_columns = [
-                                '@id_x', '@type_x', 'id_x', 'user', 'program', 'genderIdentity',
-                                'kaizenClientType', 'createdAt_x', 'updatedAt', 'sex', 'residingInPhilippines',
-                                'liftingExperience', 'groupGenderPreference', 'currentGoal', 'followUpLevel',
-                                'accountabilityBuddies', 'province', 'city', 'goSolo', 'hasAccountabilityBuddies',
-                                'retainPreviousCoach', 'joiningAsStudent', 'ageGroup', 'previousCoachName',
-                                'country', 'locationIdentifier', 'internationalCity', 'internationalState',
-                                '@id_y', '@type_y', 'id_y', 'email', 'name', 'createdAt_y',
-                                'OnboardingTasksCompleted', 'firstName', 'lastName', 'nickname', 'guid',
-                                'trackers', 'enrolledPrograms'
-                            ]
-
-                            # Keep only columns that exist in the merged dataframe
-                            final_columns = [col for col in desired_columns if col in merged_df.columns]
-                            merged_df = merged_df[final_columns]
-
-                            # Store merged data
-                            st.session_state.merged_data = merged_df
-                            st.session_state.column_mapping = {}  # Will be set when needed
-
-                            st.success(f"✅ Data merged successfully! Users: {len(users_df)}, Grouping: {len(grouping_df)}, Merged: {len(merged_df)}")
-
-                        else:
-                            st.error("❌ Could not find user field in grouping data for merging")
-                            return
-                    else:
-                        st.error("❌ Required fields not found for merging (users.id or grouping.user)")
-                        return
-                else:
-                    st.error("❌ Failed to fetch both users and grouping data")
-                    return
-
-            with st.spinner("Step 4/4: Creating merged Excel file..."):
-                # Create Excel file with multiple sheets like the manual "Merge & Download Excel" process
-                import io
-                from datetime import datetime
-
-                # Store merged data in session state for group creation
-                st.session_state.merged_data = merged_df
-
-                # Normalize data types to prevent display issues (same as manual process)
-                for df in [users_df, grouping_df, merged_df]:
-                    for col in df.columns:
-                        try:
-                            df[col] = df[col].apply(lambda x: str(x) if isinstance(x, (list, dict, tuple)) or pd.isna(x) else x)
-                            df[col] = df[col].astype(str)
-                        except:
-                            df[col] = "Data conversion error"
-
-                # Clean accountabilityBuddies field (same as manual process)
-                if 'accountabilityBuddies' in merged_df.columns:
-                    if 'hasAccountabilityBuddies' in merged_df.columns:
-                        merged_df['hasAccountabilityBuddies'] = merged_df['hasAccountabilityBuddies'].astype(str).str.lower()
-                        mask = merged_df['hasAccountabilityBuddies'].isin(['false', '0', '0.0', 'no'])
-                        merged_df.loc[mask, 'accountabilityBuddies'] = ''
-
-                    def clean_accountability_buddies(value):
-                        if pd.isna(value) or value == 'None' or value == 'nan':
-                            return ''
-                        if isinstance(value, str):
-                            if value == '[None, None]' or value == '[None]' or value == "{'1': None}":
-                                return ''
-                            cleaned = value.strip('[]').replace('"', '').replace("'", '')
-                            if cleaned == '' or cleaned == 'None':
-                                return ''
-                            emails = [email.strip() for email in cleaned.split(',') if email.strip() and '@' in email.strip()]
-                            if not emails:
-                                return ''
-                            return value
-                        return value
-
-                    merged_df['accountabilityBuddies'] = merged_df['accountabilityBuddies'].apply(clean_accountability_buddies)
-
-                # Create Excel file with multiple sheets (same as manual process)
-                buffer = io.BytesIO()
-
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    # Main merged data
-                    merged_df.to_excel(writer, sheet_name='Merged Data', index=False)
-
-                    # Individual datasets
-                    users_df.to_excel(writer, sheet_name='Users Data', index=False)
-                    grouping_df.to_excel(writer, sheet_name='Grouping Preferences', index=False)
-
-                    # Summary sheet
-                    summary_data = {
-                        'Metric': ['Total Records', 'Users Data', 'Grouping Preferences', 'Merged Records'],
-                        'Count': [len(merged_df), len(users_df), len(grouping_df), len(merged_df)]
-                    }
-                    summary_df = pd.DataFrame(summary_data)
-                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
-
-                buffer.seek(0)
-
-                st.success(f"✅ Successfully merged data! Result: {len(merged_df)} records")
-
-                # Show merged data info (same as manual process)
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Records", len(merged_df))
-                with col2:
-                    st.metric("Users Data", len(users_df))
-                with col3:
-                    st.metric("Grouping Preferences", len(grouping_df))
-
-                # Download button (same as manual process)
-                st.download_button(
-                    label="📥 Download Merged Excel File",
-                    data=buffer.getvalue(),
-                    file_name=f"merged_users_grouping_preferences_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-
-                # Show preview of merged data (same as manual process)
-                st.subheader("📊 Merged Data Preview")
-                st.dataframe(merged_df.head(10), use_container_width=True)
-
-        except Exception as e:
-            st.error(f"❌ Error during fetch and merge: {str(e)}")
-            import traceback
-            st.error(f"Details: {traceback.format_exc()}")
-
     # Merge data section
     st.subheader("🔗 Merge Data")
     
@@ -1463,15 +1309,22 @@ def show_api_page():
     with col1:
         if st.button("👥 Fetch All Users", type="primary", use_container_width=True):
             fetch_all_api_data("https://portal.thelazylifter.com/api/users", access_token, max_pages=500)
-            st.session_state.users_data = st.session_state.all_api_records
-            st.success("✅ Users data fetched and stored!")
+            raw_users = st.session_state.all_api_records
+            program_name_indicator = f"Kaizen S{program_id}"
+            filtered_users = []
+            for u in raw_users:
+                if isinstance(u, dict) and 'enrolledPrograms' in u:
+                    if program_name_indicator.lower() in str(u['enrolledPrograms']).lower():
+                        filtered_users.append(u)
+            st.session_state.users_data = filtered_users or raw_users
+            st.success(f"✅ Users data fetched, filtered to '{program_name_indicator}' ({len(filtered_users)} users), and stored!")
     
     with col2:
-        if st.button("📋 Fetch All Grouping Preferences for Season 9", type="primary", use_container_width=True):
-            # Fetch only essential grouping preference data for Season 9
+        if st.button(f"📋 Fetch All Grouping Preferences for Program {program_id}", type="primary", use_container_width=True):
+            # Fetch only essential grouping preference data for the program
             # Necessary data includes: user_id, gender_preference, and other grouping-related fields
             # Using pagination to manage response size efficiently
-            fetch_all_api_data("https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/7", access_token, max_pages=500)
+            fetch_all_api_data(f"https://portal.thelazylifter.com/api/grouping_preferences?program=/api/programs/{program_id}", access_token, max_pages=500)
 
             # Filter to only include records with necessary data for grouping
             if 'all_api_records' in st.session_state:
@@ -1788,173 +1641,261 @@ def fetch_api_data(api_url, access_token, page_number):
         st.error(f"❌ Unexpected error: {str(e)}")
         st.error(f"Error type: {type(e).__name__}")
 
+def _fetch_all_pages_raw(api_url, access_token, max_pages=500, items_per_page=30):
+    """Pure data fetch with no Streamlit UI calls — thread-safe.
+    Returns (records: list, total_pages: int, total_items: int).
+    """
+    import concurrent.futures
+    import urllib.parse
+    import re
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    def get_page_url(base_url, page_num):
+        parsed = urllib.parse.urlparse(base_url)
+        query = urllib.parse.parse_qs(parsed.query)
+        query['page'] = [str(page_num)]
+        return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+
+    def fetch_page(url):
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}")
+        data = response.json()
+        records, total_pages, total_items = [], 0, 0
+        if isinstance(data, dict):
+            if 'hydra:member' in data:
+                records = data['hydra:member']
+                view = data.get('hydra:view', {})
+                if 'hydra:last' in view:
+                    m = re.search(r'page=(\d+)', view['hydra:last'])
+                    if m:
+                        total_pages = int(m.group(1))
+                if total_pages == 0 and 'hydra:totalItems' in data:
+                    total_items = int(data['hydra:totalItems'])
+                    total_pages = (total_items + items_per_page - 1) // items_per_page
+            elif 'data' in data:
+                records = data['data']
+                total_pages = data.get('meta', {}).get('last_page') or data.get('pagination', {}).get('last_page', 0)
+            elif 'results' in data:
+                records = data['results']
+            elif 'items' in data:
+                records = data['items']
+            else:
+                records = [data]
+        elif isinstance(data, list):
+            records = data
+        return records, total_pages or 0, total_items or 0
+
+    # Page 1 to discover pagination
+    recs_p1, total_pages, total_items = fetch_page(get_page_url(api_url, 1))
+    all_records = list(recs_p1)
+    total_pages = min(total_pages or 1, max_pages)
+
+    if total_pages > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(fetch_page, get_page_url(api_url, p)): p
+                for p in range(2, total_pages + 1)
+            }
+            page_results = {}
+            for future in concurrent.futures.as_completed(futures):
+                p = futures[future]
+                try:
+                    recs, _, _ = future.result()
+                    page_results[p] = recs
+                except Exception:
+                    pass  # skip failed pages silently
+            for p in sorted(page_results):
+                all_records.extend(page_results[p])
+
+    return all_records, total_pages, total_items
+
+
+def _fetch_users_by_ids(base_url, user_ids, access_token):
+    """Fetch specific users by ID in parallel. Far fewer requests than paging all users.
+    base_url should be like 'https://portal.thelazylifter.com/api/users'.
+    Returns list of user dicts.
+    """
+    import concurrent.futures
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    def fetch_one(uid):
+        url = f"{base_url.rstrip('/')}/{uid}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            pass
+        return None
+
+    users = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        results = list(executor.map(fetch_one, user_ids))
+    for r in results:
+        if r and isinstance(r, dict):
+            users.append(r)
+    return users
+
+
 def fetch_all_api_data(api_url, access_token, max_pages=50, items_per_page=30):
-    """Fetch all pages of data from the API using Hydra format"""
+    """Fetch all pages of data from the API concurrently using a thread pool"""
+    import concurrent.futures
+    import urllib.parse
+    import re
+    import json
+    
     try:
         all_records = []
-        page = 1
-        total_pages = 0
-        total_items = 0
-        consecutive_empty_pages = 0
-        current_url = api_url  # Start with the initial URL
-
         # Store the current API URL for display purposes
         st.session_state.current_api_url = api_url
 
-        # Create progress bar
+        # Create progress bar and status displays
         progress_bar = st.progress(0)
         status_text = st.empty()
 
-        with st.spinner("Fetching all pages..."):
-            while current_url and page <= max_pages:
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {access_token}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
+
+        # Helper function to construct page URLs
+        def get_page_url(base_url, page_num):
+            parsed = urllib.parse.urlparse(base_url)
+            query = urllib.parse.parse_qs(parsed.query)
+            query['page'] = [str(page_num)]
+            new_query = urllib.parse.urlencode(query, doseq=True)
+            return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+        # Helper function to fetch a single page
+        def fetch_page(url, page_num):
+            try:
+                response = requests.get(url, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    data = response.json()
+                    records = []
+                    total_pages = 0
+                    total_items = 0
+                    
+                    if isinstance(data, dict):
+                        if 'hydra:member' in data:
+                            records = data['hydra:member']
+                            if 'hydra:view' in data:
+                                hydra_view = data['hydra:view']
+                                if 'hydra:last' in hydra_view:
+                                    last_url = hydra_view['hydra:last']
+                                    try:
+                                        match = re.search(r'page=(\d+)', last_url)
+                                        if match:
+                                            total_pages = int(match.group(1))
+                                    except:
+                                        pass
+                            if total_pages == 0 and 'hydra:totalItems' in data:
+                                total_items = int(data['hydra:totalItems'])
+                                total_pages = (total_items + items_per_page - 1) // items_per_page
+                        elif 'data' in data:
+                            records = data['data']
+                            if 'meta' in data and 'last_page' in data['meta']:
+                                total_pages = data['meta']['last_page']
+                            elif 'pagination' in data and 'last_page' in data['pagination']:
+                                total_pages = data['pagination']['last_page']
+                        elif 'results' in data:
+                            records = data['results']
+                        elif 'items' in data:
+                            records = data['items']
+                        else:
+                            records = [data]
+                    elif isinstance(data, list):
+                        records = data
+                        
+                    return {
+                        'success': True,
+                        'records': records,
+                        'total_pages': total_pages,
+                        'total_items': total_items,
+                        'page_num': page_num
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': f"Status {response.status_code}",
+                        'page_num': page_num
+                    }
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'page_num': page_num
                 }
 
-                # Show the URL being used for this page
-                st.write(f"🔗 Page {page} URL: {current_url}")
-                status_text.text(f"Fetching page {page}...")
+        # Step 1: Fetch Page 1 to determine total pages/items
+        status_text.text("Connecting to API and fetching Page 1...")
+        p1_url = get_page_url(api_url, 1)
+        p1_result = fetch_page(p1_url, 1)
 
-                response = requests.get(current_url, headers=headers, timeout=30)
-                
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        
-                        # Extract records based on Hydra format
-                        records = []
-                        if isinstance(data, dict):
-                            # Check for Hydra format first
-                            if 'hydra:member' in data:
-                                records = data['hydra:member']
+        if not p1_result['success']:
+            st.error(f"❌ Failed to fetch Page 1: {p1_result['error']}")
+            return
 
-                                # Priority: Get pagination info from hydra:view first
-                                if 'hydra:view' in data:
-                                    hydra_view = data['hydra:view']
-                                    if 'hydra:last' in hydra_view:
-                                        # Extract page number from hydra:last URL
-                                        last_url = hydra_view['hydra:last']
-                                        try:
-                                            # Extract page number from URL like "?page=5"
-                                            import re
-                                            match = re.search(r'page=(\d+)', last_url)
-                                            if match:
-                                                total_pages = int(match.group(1))
-                                                # Silently set total_pages without showing message
-                                            else:
-                                                st.warning("⚠️ Could not extract page count from API")
-                                        except Exception as e:
-                                            pass  # Silently handle extraction errors
-
-                                # Fallback: Get total items count from hydra:totalItems if view didn't work
-                                if total_pages == 0 and 'hydra:totalItems' in data:
-                                    total_items = int(data['hydra:totalItems'])
-                                    # Calculate total pages based on items per page
-                                    total_pages = (total_items + items_per_page - 1) // items_per_page  # Ceiling division
-                                    if total_pages <= max_pages:
-                                        st.info(f"📊 Estimated {total_pages} pages from {total_items} items")
-                            elif 'data' in data:
-                                records = data['data']
-                                # Check if there's pagination info
-                                if 'meta' in data and 'last_page' in data['meta']:
-                                    total_pages = data['meta']['last_page']
-                                elif 'pagination' in data and 'last_page' in data['pagination']:
-                                    total_pages = data['pagination']['last_page']
-                            elif 'results' in data:
-                                records = data['results']
-                            elif 'items' in data:
-                                records = data['items']
-                            else:
-                                records = [data]
-                        elif isinstance(data, list):
-                            records = data
-                        
-                        if records:
-                            all_records.extend(records)
-                            consecutive_empty_pages = 0  # Reset counter when we find records
-                            # Only show success messages every 5 pages or for significant events
-                            if page % 5 == 1 or page == 1:
-                                st.success(f"📄 Page {page}: {len(records)} records")
-                        else:
-                            consecutive_empty_pages += 1
-                            if consecutive_empty_pages == 1:
-                                st.warning(f"⚠️ Page {page}: No records found")
-
-                            # If we get 2 consecutive empty pages, assume we've reached the end
-                            if consecutive_empty_pages >= 2:
-                                break
-                        
-                        # Update progress
-                        if total_pages > 0:
-                            progress = min(page / total_pages, 1.0)
-                            progress_bar.progress(progress)
-                            if total_items > 0:
-                                status_text.text(f"Fetching page {page}/{total_pages} ({len(all_records)}/{total_items} records)")
-                            else:
-                                status_text.text(f"Fetching page {page}/{total_pages}")
-                        else:
-                            status_text.text(f"Fetching page {page}...")
-
-                        # Check for next page URL in hydra:view
-                        next_url = None
-                        if isinstance(data, dict) and 'hydra:view' in data:
-                            hydra_view = data['hydra:view']
-                            if 'hydra:next' in hydra_view:
-                                next_url = hydra_view['hydra:next']
-
-                                # Handle relative URLs by making them absolute
-                                if next_url and not next_url.startswith(('http://', 'https://')):
-                                    # If it's a relative URL, prepend the confirmed base URL
-                                    from urllib.parse import urljoin
-                                    base_url = "https://portal.thelazylifter.com/"
-                                    next_url = urljoin(base_url, next_url.lstrip('/'))
-                                    # Silently fix the URL without showing a message
-
-                        # Update current URL for next iteration
-                        if next_url:
-                            current_url = next_url
-                        else:
-                            current_url = None  # No more pages
-
-                        page += 1
-
-                        # If we know total pages from hydra:last, stop exactly at that page
-                        if total_pages > 0 and page > total_pages:
-                            break
-
-                        # If no next URL, we've reached the end
-                        if not current_url:
-                            st.info("✅ Reached the last page (no more hydra:next URL)")
-                            break
-
-                        # Intelligent end detection: if we've fetched many pages with very few records, stop
-                        # This indicates we've reached the actual end of data, even if hydra:last suggests more pages
-                        if page > 5 and len(records) < 5 and consecutive_empty_pages == 0:
-                            actual_pages = page - 1  # The last page that had records
-                            if total_pages > actual_pages and total_pages > 10:  # Only adjust if significant discrepancy
-                                st.warning(f"⚠️ Data ends earlier than expected (page {actual_pages} vs {total_pages})")
-                                total_pages = actual_pages  # Update to reflect reality
-                                # Update progress bar to reflect corrected total
-                                progress = min(page / total_pages, 1.0)
-                                progress_bar.progress(progress)
-                            break
-
-                        # Safety check: if we've fetched many pages with very few records, stop
-                        # This prevents infinite loops when API returns empty pages
-                        if page > 5 and len(records) < 5:
-                            st.info(f"⚠️ Stopping at page {page} due to low record count ({len(records)} records)")
-                            break
-                            
-                    except json.JSONDecodeError as e:
-                        st.error(f"❌ Invalid JSON response on page {page}: {str(e)}")
-                        break
-                else:
-                    st.error(f"❌ API request failed on page {page}!")
-                    st.error(f"Status Code: {response.status_code}")
-                    break
+        all_records.extend(p1_result['records'])
+        total_pages = p1_result['total_pages']
+        total_items = p1_result['total_items']
         
-        # Store all records
+        if total_pages == 0:
+            total_pages = 1
+            
+        total_pages = min(total_pages, max_pages)
+
+        # Show success for page 1
+        st.success(f"📄 Page 1: {len(p1_result['records'])} records found. Total pages: {total_pages}")
+        
+        # Step 2: Fetch remaining pages concurrently if any
+        if total_pages > 1:
+            status_text.text(f"Scheduling concurrent fetch for pages 2 to {total_pages}...")
+            
+            # Keep track of completed pages for updating progress bar
+            completed_count = 1  # Page 1 is already done
+            
+            # Using 10 workers for concurrent requests to keep it fast but respectful of the server
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {
+                    executor.submit(fetch_page, get_page_url(api_url, p), p): p
+                    for p in range(2, total_pages + 1)
+                }
+                
+                # Dictionary to temporarily store results so we can append them in order
+                fetched_results = {}
+                
+                for future in concurrent.futures.as_completed(futures):
+                    p = futures[future]
+                    result = future.result()
+                    completed_count += 1
+                    
+                    # Update progress bar
+                    progress = min(completed_count / total_pages, 1.0)
+                    progress_bar.progress(progress)
+                    status_text.text(f"Fetched page {completed_count}/{total_pages}...")
+                    
+                    if result['success']:
+                        fetched_results[p] = result['records']
+                        if p % 10 == 0:  # Print updates occasionally so the screen isn't overwhelmed
+                            st.success(f"📄 Page {p} loaded ({len(result['records'])} records)")
+                    else:
+                        st.warning(f"⚠️ Page {p} failed to load: {result['error']}")
+                
+                # Append in correct order
+                for p in sorted(fetched_results.keys()):
+                    all_records.extend(fetched_results[p])
+
+        # Store all records in session state
         st.session_state.api_data = {'data': all_records}
         st.session_state.all_api_records = all_records
         
@@ -1962,15 +1903,14 @@ def fetch_all_api_data(api_url, access_token, max_pages=50, items_per_page=30):
         status_text.empty()
 
         if total_items > 0:
-            st.success(f"✅ Successfully fetched {len(all_records)}/{total_items} records from {page-1} pages!")
+            st.success(f"✅ Successfully fetched {len(all_records)}/{total_items} records concurrently across {total_pages} pages!")
         else:
-            st.success(f"✅ Successfully fetched {len(all_records)} total records from {page-1} pages!")
-        
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Connection error: {str(e)}")
+            st.success(f"✅ Successfully fetched {len(all_records)} total records concurrently across {total_pages} pages!")
+
     except Exception as e:
-        st.error(f"❌ Unexpected error: {str(e)}")
-        st.error(f"Error type: {type(e).__name__}")
+        st.error(f"❌ Unexpected error in concurrent fetch: {str(e)}")
+        import traceback
+        st.error(f"Details: {traceback.format_exc()}")
 
 def merge_and_download_excel(access_token):
     """Merge users and grouping preferences data and download as Excel"""
